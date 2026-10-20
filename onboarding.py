@@ -90,6 +90,8 @@ def bootstrap(db,cfg,api,now):
             for event in data.get('messages',[]):
                 stamp=float(event.get('time',0))
                 if str(event.get('user_id'))==str(cfg['bot_id']) or not now-30*86400<=stamp<=now:continue
+                import archive
+                archive.record_event(cfg,dict(event,group_id=gid))
                 event.update(post_type='message',message_type='group',group_id=gid)
                 memory.observe(event,cfg['bot_id']);latest=max(latest,stamp)
                 text=' '.join(str(p.get('data',{}).get('text','')) for p in event.get('message',[]) if isinstance(p,dict) and p.get('type')=='text')
@@ -101,7 +103,11 @@ def bootstrap(db,cfg,api,now):
         memory.flush(cfg['groups'])
         body=f'扫描到 {member_count} 名成员；其中 {len(known)} 个账号在其他群的本机样本或成员扫描中出现过。\n'
         if known:body+='已有交集的昵称：'+'、'.join(known[:20])+'。仅表示账号交集，不等同于私交。\n'
-        if samples:
+        if cfg.get('profiling',{}).get('enabled'):
+            import profiling
+            profiling.enqueue(db,cfg,gid)
+            body+='\n已安排批量历史建档：先完成群画像，再逐成员更新画像；此处只记录扫描结果。\n'
+        elif samples:
             model=social.load_model(cfg)
             if model.get('enabled') and social.api_key(model):
                 # One bounded distillation call per group, recorded in the same usage ledger.

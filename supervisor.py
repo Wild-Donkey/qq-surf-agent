@@ -28,6 +28,8 @@ pidfile.write_text(str(os.getpid()))
 running=True
 child=None
 diagnostic=None
+profile_child=None
+profile_started=0
 diagnostic_started=0
 
 def start_diagnostic():
@@ -39,26 +41,41 @@ def start_diagnostic():
     finally:log.close()
     diagnostic_started=time.monotonic()
 
+def start_profile():
+    global profile_child,profile_started
+    cfg=json.loads(args.config.read_text())
+    if not cfg.get('profiling',{}).get('enabled'):return
+    log=(WORK/'profiling.log').open('ab',buffering=0)
+    try:profile_child=subprocess.Popen([sys.executable,'-u',str(ROOT/'profile_service.py'),'--config',str(args.config.resolve()),'run'],cwd=str(ROOT),stdout=log,stderr=subprocess.STDOUT)
+    finally:log.close()
+    profile_started=time.monotonic()
+
 def stop(*_):
     global running
     running=False
     if child is not None and child.poll() is None:child.terminate()
+    if profile_child is not None and profile_child.poll() is None:profile_child.terminate()
     if diagnostic is not None and diagnostic.poll() is None:diagnostic.terminate()
 signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
 delay=2
 try:
     start_diagnostic()
+    start_profile()
     while running:
         log=WORK/'workflow.log'
         if log.exists() and log.stat().st_size>2_000_000:
             log.replace(WORK/'workflow.previous.log')
+        planned_restart=False
         started=time.monotonic()
         with log.open('ab',buffering=0) as out:
             out.write(('\n服务启动 '+time.strftime('%Y-%m-%d %H:%M:%S')+'\n').encode())
             child=subprocess.Popen([sys.executable,'-u',str(ROOT/'workflow.py'),'--config',str(args.config.resolve()),'run'],cwd=str(ROOT),stdout=out,stderr=subprocess.STDOUT)
             (WORK/'workflow-child.pid').write_text(str(child.pid))
             while child.poll() is None:
+                if profile_child is not None and profile_child.poll() is not None and time.monotonic()-profile_started>60:start_profile()
                 if diagnostic is not None and diagnostic.poll() is not None and time.monotonic()-diagnostic_started>60:start_diagnostic()
+                if (WORK/'workflow.restart').exists():
+                    (WORK/'workflow.restart').unlink();planned_restart=True;child.terminate()
                 if (WORK/'workflow.stop').exists():
                     (WORK/'workflow.stop').unlink()
                     stop()
@@ -68,6 +85,7 @@ try:
                     break
                 time.sleep(1)
         if not running:break
+        if planned_restart:delay=2;continue
         try:
             import alerts,workflow
             cfg=json.loads(args.config.read_text());database=Path(cfg['database'])
@@ -82,6 +100,10 @@ try:
             time.sleep(1)
         delay=min(delay*2,60)
 finally:
+    if profile_child is not None and profile_child.poll() is None:
+        profile_child.terminate()
+        try:profile_child.wait(timeout=10)
+        except subprocess.TimeoutExpired:profile_child.kill()
     if diagnostic is not None and diagnostic.poll() is None:
         diagnostic.terminate()
         try:diagnostic.wait(timeout=10)

@@ -65,5 +65,12 @@
   },
   "durable_archive": {
     "enabled": true
+  },
+  "profiling": {
+    "enabled": true,
+    "history_days": 30,
+    "max_messages": 5000,
+    "page_size": 200,
+    "max_pages": 50
   }
 }

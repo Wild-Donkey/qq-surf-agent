@@ -436,6 +436,7 @@ def main():
             def stopped(*_): stop.set()
             signal.signal(signal.SIGTERM,stopped); signal.signal(signal.SIGINT,stopped)
             thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+            with db:db.execute("UPDATE social_jobs SET status='pending' WHERE status='processing'")
             participants.reconcile_archive(db,cfg)
             participants.sync_config(db,cfg)
             # Migration: existing cached messages still count toward human presence.

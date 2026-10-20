@@ -1,6 +1,8 @@
 import archive
 import emoticons
 import application
+import model_gate
+from protocol import ProtocolError
 """Message-triggered conversational planner. Offline memories are fetched per decision."""
 import hashlib
 import json
@@ -162,7 +164,7 @@ def choose(db,cfg,memory,job,task=None):
     user=job['user_id'] if source==target else None
     recalled=task.session.recall(memory,user) if task else memory.retrieve(target,user,12000)
     query=job['trigger_text']+' '+' '.join(view['text'] for view in recent_views[:4])
-    payload={'emoticon_catalog':emoticons.catalog(memory.root,target),'memory':recalled,
+    payload={'group_portrait':application.group_portrait(cfg,target),'emoticon_catalog':emoticons.catalog(memory.root,target),'memory':recalled,
              'recent_visual_observations':[r[0] for r in memory.db.execute("SELECT note FROM notes WHERE scope='group' AND scope_id=? AND note LIKE '图片观察%' AND created>? ORDER BY created DESC LIMIT 4",(str(target),time.time()-1800))],
              'context_watermark':max((r['created'] for r in recent if not r['message_id'].startswith('bot:')),default=0),
              'current_message':{'text':excerpt(job['trigger_text'],6000),'images':job['trigger_images'],'source':'本群' if source==target else '隔壁群'},
@@ -276,9 +278,10 @@ def tick(db,cfg,sessions=None):
         if not activity or not 0<=now-activity[0]<=cfg.get('inactive_group_days',14)*86400:
             with db:db.execute("UPDATE social_jobs SET status='inactive_group' WHERE event_key=? AND target_group=?",(job['event_key'],job['target_group']))
             return
+        call_id=model_gate.reserve(db,cfg,now)
+        if call_id is None:return
         with db:
             for item in batch:db.execute("UPDATE social_jobs SET status='processing' WHERE event_key=? AND target_group=?",(item['event_key'],item['target_group']))
-            call_id=db.execute('INSERT INTO model_calls(created,status) VALUES (?,?)',(now,'reserved')).lastrowid
         try:
             task=sessions.task(db,cfg,job,now)
             payload,candidates=choose(db,cfg,memory,job,task)
@@ -316,7 +319,9 @@ def tick(db,cfg,sessions=None):
                 remaining=interval-(time.monotonic()-model_started)
                 if remaining>0:time.sleep(remaining)
                 model_started=time.monotonic()
-                with db:read_call=db.execute('INSERT INTO model_calls(created,status) VALUES (?,?)',(time.time(),'reserved')).lastrowid
+                read_call=model_gate.reserve(db,cfg)
+                while read_call is None:
+                    time.sleep(.5);read_call=model_gate.reserve(db,cfg)
                 try:decision,next_usage=call_model(model,payload)
                 except Exception:
                     with db:db.execute("UPDATE model_calls SET status='failed',error='worker_read_call_failed' WHERE id=?",(read_call,))
@@ -352,8 +357,8 @@ def tick(db,cfg,sessions=None):
                 db.execute("UPDATE model_calls SET status='ok',input_tokens=?,output_tokens=? WHERE id=?",(usage.get('prompt_tokens',0),usage.get('completion_tokens',0),call_id))
                 db.execute('INSERT OR REPLACE INTO metrics VALUES (?,?)',('model_state','ready'))
         except Exception as exc:
-            error=type(exc).__name__
-            pause=60
+            error=exc.code if isinstance(exc,ProtocolError) else type(exc).__name__
+            pause=5 if isinstance(exc,ProtocolError) else 60
             if isinstance(exc,urllib.error.HTTPError):
                 try:
                     detail=json.loads(exc.read()).get('error',{})
@@ -366,7 +371,8 @@ def tick(db,cfg,sessions=None):
                 db.execute('INSERT OR REPLACE INTO metrics VALUES (?,?)',('model_state',error))
                 db.execute('INSERT OR REPLACE INTO metrics VALUES (?,?)',('model_retry_after',str(now+pause)))
             hint='请检查 ChatGPT 授权、订阅限额或连接状态。' if model.get('provider')=='chatgpt' else '若提示额度不足，请检查 API 项目余额。'
-            alerts.record(db,'model_'+error,'模型调用失败，已暂停重试。'+hint)
+            details=exc.details if isinstance(exc,ProtocolError) else {'stage':'chat_turn','error':type(exc).__name__}
+            alerts.record(db,'model_'+error,'模型输出格式异常，自动重试中。' if isinstance(exc,ProtocolError) else '模型调用失败，重试中。',details=details)
         with db:
             db.execute("DELETE FROM social_jobs WHERE created<? AND status!='pending'",(now-48*3600,))
             db.execute('DELETE FROM model_calls WHERE created<?',(now-30*86400,))

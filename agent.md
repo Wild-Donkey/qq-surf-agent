@@ -37,3 +37,5 @@ finish_turn/update_states 可带 images:[{reference,description}]，描述本轮
 触发规则更新：安静5秒开始处理；持续有消息时从本轮第一条起最多等待20秒，应用会固定当前窗口并让后续消息进入下一轮。20秒是开始处理的上限，生成和接口耗时另计。到期不等于必须说话；难以自然回应、话题没看懂、拟出的回复是硬接梗或尬聊，都选择wait。reply/share/finish_turn要发送时必须附 quality="natural"；若难接用quality="difficult"，尬聊用quality="awkward"，应用会跳过。不要为了到20秒而凑一句。
 
 成员类型也可通过members状态接口提交：在{user_id,state}外附 account_kind（human/bot/unknown）、confidence、reason、evidence_keys。只引用member_profiles.evidence_records中该成员在本群的真实event_key。应用校验来源、证据归属和置信度；不能覆盖配置/接口确认或已知bot。对unknown要根据整个对话作出有依据的推断，不能永远不判断；不只凭口吻自然就认定真人，也不凭模型昵称认定bot。
+
+历史画像：group_portrait 是应用从大批历史分块读取后汇总的群画像；member_memories 优先注入对应成员的历史画像和近期状态。它们与少量最近聊天摘要不同。结合长期画像和当前原话判断，不把画像中的历史话题当作眼下正在聊。历史画像按群分区；成员没发言或样本不足时不编。

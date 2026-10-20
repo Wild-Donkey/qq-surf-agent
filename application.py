@@ -3,6 +3,7 @@ import json,time,hashlib,re
 from pathlib import Path
 from memory import MarkdownMemory,atomic_write,safe_id
 import archive,emoticons,participants
+from protocol import parse_json
 TOOLS=[
  {'name':'update_states','description':'提交群状态 group_state 和成员状态 members:[{user_id,state}]，应用校验后落盘'},
  {'name':'finish_turn','description':'一次提交状态并结束：group_state,members,action(wait/reply/share),text,candidate_id,emoticon,reason'},
@@ -15,7 +16,7 @@ TOOLS=[
  {'name':'wait','description':'保持安静，参数 reason'}]
 READS={'update_states','read_context','get_member','search_history','list_emoticons'}
 def decode(raw):
- value=json.loads(raw)
+ value=parse_json(raw,'worker_api')
  if not isinstance(value,dict) or set(value)-{'call'}:raise ValueError('worker_must_call_application_api')
  call=value.get('call')
  if not isinstance(call,dict) or set(call)-{'name','arguments'}:raise ValueError('invalid_api_call')
@@ -81,14 +82,28 @@ def member_markdown(cfg,group,user):
     text=path.read_text()
     # Group-specific state from other groups is never injected into this worker.
     def keep(match):return match[0] if match[1]==str(group) else ''
-    return re.sub(r'<!-- group-state:(\d+):start -->.*?<!-- group-state:\1:end -->',keep,text,flags=re.S)
+    text=re.sub(r'<!-- group-state:(\d+):start -->.*?<!-- group-state:\1:end -->',keep,text,flags=re.S)
+    return re.sub(r'<!-- group-portrait:(\d+):start -->.*?<!-- group-portrait:\1:end -->',keep,text,flags=re.S)
 
 
-def member_context(cfg,group,payload,budget=16000):
-    profiles=payload.get('member_profiles',[]);result=[]
-    for profile in profiles:
+def group_portrait(cfg,group):
+    path=Path(cfg['context_dir'])/'groups'/safe_id(group)/'group.md'
+    if not path.exists():return ''
+    match=re.search(r'<!-- portrait:start -->.*?<!-- portrait:end -->',path.read_text(),flags=re.S)
+    return match[0] if match else ''
+
+
+def member_context(cfg,group,payload,budget=24000):
+    profiles=sorted(payload.get('member_profiles',[]),key=lambda p:max((r['created'] for r in p.get('evidence_records',[])),default=0),reverse=True);result=[]
+    for index,profile in enumerate(profiles):
         user=str(profile['id']);full=member_markdown(cfg,group,user)
-        text=full[:min(2000,max(0,budget))];budget-=len(text)
+        priority=[]
+        for label in ('group-portrait:'+str(group),'group-state:'+str(group),'account-kind'):
+            match=re.search(re.escape('<!-- '+label+':start -->')+'.*?'+re.escape('<!-- '+label+':end -->'),full,flags=re.S)
+            if match:priority.append(match[0]);full=full.replace(match[0],'')
+        full='\n'.join(priority)+'\n'+full
+        limit=min(4000,max(0,budget//max(1,len(profiles)-index)))
+        text=full[:limit];budget-=len(text)
         result.append({'user_id':user,'markdown':text,'truncated':len(text)<len(full),'profile':profile['current_judgment']})
     return result
 

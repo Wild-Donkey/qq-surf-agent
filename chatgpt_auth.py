@@ -1,5 +1,6 @@
 """Official Sign in with ChatGPT for this local runtime; never imports Codex credentials."""
 import argparse
+from protocol import parse_json
 import base64
 import fcntl
 import hashlib
@@ -198,7 +199,7 @@ def infer(model, instructions, payload, image_inputs=None):
             elif not line and event:
                 data='\n'.join(event);event=[]
                 if data=='[DONE]':continue
-                item=json.loads(data)
+                item=parse_json(data,'sse_event')
                 if item.get('type') in ('error','response.failed','response.incomplete'):
                     raise ValueError('ChatGPT 流式响应未完成')
                 if item.get('type')=='response.output_item.done':
@@ -228,7 +229,7 @@ if __name__=='__main__':
         if args.command=='models':print(json.dumps(models,ensure_ascii=False,indent=2))
         else:
             if args.model not in {m['slug'] for m in models}:raise SystemExit('请用 --model 指定当前账号模型目录中的模型')
-            raw,usage=infer(args.model,'仅输出 JSON：{"action":"wait","text":"","reason":"连接测试"}',{'test':True})
+            raw,usage=infer(args.model,'仅输出 JSON：{"call":{"name":"wait","arguments":{"reason":"连接测试"}}}',{'test':True})
             import social
             social.validate_decision(raw)
             config=read(ROOT/'llm.local.json',{})
