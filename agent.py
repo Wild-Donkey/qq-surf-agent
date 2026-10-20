@@ -246,7 +246,7 @@ def send(db, cfg):
 
 
 def onebot_call(cfg, action, payload=None):
-    allowed = {'get_image', 'get_msg', 'get_status', 'get_login_info', 'get_group_list', 'get_group_member_list', 'get_friend_list', 'get_group_msg_history', 'send_group_msg', 'send_private_msg', 'send_group_forward_msg', 'set_group_add_request'}
+    allowed = {'get_record', 'get_image', 'get_msg', 'get_status', 'get_login_info', 'get_group_list', 'get_group_member_list', 'get_friend_list', 'get_group_msg_history', 'send_group_msg', 'send_private_msg', 'send_group_forward_msg', 'set_group_add_request'}
     if action not in allowed:
         raise ValueError('不支持此 OneBot 操作')
     sender = cfg.get('sender', {})
