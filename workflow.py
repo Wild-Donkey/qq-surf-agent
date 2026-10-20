@@ -2,6 +2,7 @@
 """Persistent group-to-group relay. No third-party dependencies or external LLM calls."""
 import archive
 import moderation
+import private_chat
 import emoticons
 import argparse
 from collections import Counter
@@ -63,6 +64,7 @@ def connect(path):
         db.execute('ALTER TABLE candidates ADD COLUMN emoticon TEXT')
     if 'deadline_reply' not in {r[1] for r in db.execute('PRAGMA table_info(deliveries)')}:
         db.execute('ALTER TABLE deliveries ADD COLUMN deadline_reply INTEGER DEFAULT 0')
+    private_chat.ensure_schema(db)
     moderation.ensure_schema(db)
     social.ensure_schema(db)
     alerts.ensure_schema(db)
@@ -201,6 +203,7 @@ def _register_and_backfill_group(db, group_id, cfg, api_cfg, now):
 
 def ingest(db, event, cfg, now=None, api_cfg=None):
     now = time.time() if now is None else now
+    if private_chat.ingest(db,event,cfg,now):return "private_message"
     if moderation.ingest(db,event,cfg,now):return "moderation_notice"
     # Auto-accept group invitations directed at this bot (not member apply requests).
     if event.get('post_type') == 'request' and event.get('request_type') == 'group':
@@ -537,6 +540,7 @@ def main():
                 import memory_store
                 memory_store.migrate(cfg['context_dir'],cfg['groups'],[dict(row) for row in db.execute('SELECT * FROM speaker_profiles')])
             with db:db.execute("UPDATE social_jobs SET status='pending' WHERE status='processing'")
+            with db:db.execute("UPDATE private_messages SET status=CASE WHEN EXISTS (SELECT 1 FROM private_deliveries d WHERE d.user_id=private_messages.user_id AND d.trigger_id=private_messages.message_id) THEN 'uncertain' ELSE 'pending' END WHERE status='processing'")
             participants.reconcile_archive(db,cfg)
             participants.sync_config(db,cfg)
             # Migration: existing cached messages still count toward human presence.
@@ -561,6 +565,8 @@ def main():
                         cfg=current_config()
                         prune(db,cfg)
                         usage_report.tick(db,cfg)
+                        moderation.check_recovery(db,cfg,api_cfg)
+                        private_chat.tick(db,cfg,api_cfg)
                         social.tick(db,cfg,sessions)
                         dispatch(db,cfg,api_cfg)
                         cfg=onboarding.tick(db,cfg,api_cfg,args.config)

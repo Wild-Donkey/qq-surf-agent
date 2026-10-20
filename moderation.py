@@ -10,6 +10,9 @@ def ensure_schema(db):
         group_id TEXT PRIMARY KEY, until_time REAL, event_time REAL,
         operator_id TEXT, appeal_status TEXT, message_id TEXT)''')
     db.execute("CREATE TABLE IF NOT EXISTS mute_appeal_contacts(user_id TEXT PRIMARY KEY,last_attempt REAL)")
+    cols={r[1] for r in db.execute('PRAGMA table_info(bot_mutes)')}
+    for name,definition in [('next_check','REAL DEFAULT 0'),('return_status',"TEXT DEFAULT 'waiting'"),('return_delivery','INTEGER')]:
+        if name not in cols:db.execute('ALTER TABLE bot_mutes ADD COLUMN '+name+' '+definition)
     db.commit()
 
 def is_muted(db, group, now=None):
@@ -39,8 +42,13 @@ def ingest(db, event, cfg, now):
     if until <= now:
         status = 'cancelled'
     with db:
-        db.execute('INSERT OR REPLACE INTO bot_mutes VALUES (?,?,?,?,?,NULL)',
+        db.execute('''INSERT INTO bot_mutes(group_id,until_time,event_time,operator_id,appeal_status,message_id)
+            VALUES (?,?,?,?,?,NULL) ON CONFLICT(group_id) DO UPDATE SET until_time=excluded.until_time,
+            event_time=excluded.event_time,operator_id=excluded.operator_id,appeal_status=excluded.appeal_status,
+            next_check=0''',
                    (group, until, stamp, str(event.get('operator_id', '')), status))
+        if until>now and (not previous or previous['until_time']<=now):
+            db.execute("UPDATE bot_mutes SET return_status='waiting',return_delivery=NULL WHERE group_id=?",(group,))
         if until > now:
             db.execute("UPDATE deliveries SET status='blocked_muted',updated=? WHERE target_group=? AND status='approved'", (now, group))
     if until > now:
@@ -83,3 +91,41 @@ def flush(db, cfg, api, now=None):
     except Exception as exc:
         alerts.record(db, 'mute_appeal_uncertain', '禁言申诉结果待核实，不会重发。', scope=group, now=now, details={'error':type(exc).__name__})
         return 0
+
+
+def check_recovery(db,cfg,api,now=None):
+    """Durable 30-second timer, with live QQ metadata as evidence."""
+    import participants,social
+    now=time.time() if now is None else now
+    if cfg.get('mode')!='live':return
+    for row in db.execute("SELECT group_id,return_delivery FROM bot_mutes WHERE return_status='queued'").fetchall():
+        delivery=db.execute('SELECT status FROM deliveries WHERE id=?',(row['return_delivery'],)).fetchone()
+        if delivery:
+            if delivery[0] in ('sent','already_seen','uncertain','cancelled'):
+                with db:db.execute("UPDATE bot_mutes SET return_status='done' WHERE group_id=?",(row['group_id'],))
+            elif delivery[0] in ('superseded','expired','blocked_muted'):
+                with db:db.execute("UPDATE bot_mutes SET return_status='waiting',return_delivery=NULL WHERE group_id=?",(row['group_id'],))
+    row=db.execute("SELECT * FROM bot_mutes WHERE (until_time>0 OR return_status='waiting') AND next_check<=? ORDER BY next_check LIMIT 1",(now,)).fetchone()
+    if not row:return
+    group=row['group_id']
+    if group not in {str(g['id']) for g in cfg.get('groups',[]) if g.get('enabled',True)}:return
+    with db:
+        if not db.execute('UPDATE bot_mutes SET next_check=? WHERE group_id=? AND next_check<=?',(now+30,group,now)).rowcount:return
+    try:
+        login=agent.onebot_call(api,'get_login_info')
+        if str(login.get('user_id'))!=str(cfg['bot_id']):raise ValueError('wrong_bot')
+        members=agent.onebot_call(api,'get_group_member_list',{'group_id':int(group)})
+        me=next(m for m in members if str(m.get('user_id'))==str(cfg['bot_id']))
+        if 'shut_up_timestamp' not in me:raise ValueError('missing_mute_status')
+        until=float(me['shut_up_timestamp'])
+        with db:
+            unchanged=db.execute('UPDATE bot_mutes SET until_time=? WHERE group_id=? AND event_time=?',(until if until>now else 0,group,row['event_time'])).rowcount
+        if not unchanged:return
+        if until>now or row['return_status']!='waiting':return
+        paused=db.execute('SELECT until_time FROM operator_pause WHERE group_id=?',(group,)).fetchone()
+        if paused and paused[0]>now or not participants.humans_recent(db,group,cfg,now):return
+        delivery=social.apply_decision(db,{'target_group':group,'source_group':group,'event_key':'return:'+str(row['event_time'])},
+              {'action':'reply','text':'我回来了，按群规继续聊。','_context_watermark':now,'_deadline_reply':True},{},cfg,now)
+        with db:db.execute("UPDATE bot_mutes SET return_status='queued',return_delivery=? WHERE group_id=?",(delivery,group))
+    except Exception as exc:
+        alerts.record(db,'mute_status_check_failed','禁言恢复检查失败，继续等待核实。',scope=group,now=now,details={'error':type(exc).__name__})
