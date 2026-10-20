@@ -75,3 +75,12 @@ class StickerLibraryTests(unittest.TestCase):
   self.assertIn('有效群状态',application.group_state(cfg,'1'))
   self.assertEqual(payload['_rejected_image_annotations'],1)
   self.assertEqual(emoticons.catalog(self.root,'1')['stickers'],[])
+
+ def test_invalid_auxiliary_memory_returns_feedback_without_aborting(self):
+  cfg={'context_dir':str(self.root)};db=workflow.connect(':memory:')
+  result=application.apply_worker_states(cfg,'1',{}, {'members':[{'user_id':'not-in-context','state':'bad'}]},db)
+  self.assertFalse(result['saved']);self.assertEqual(result['error'],'member_outside_context')
+  self.assertFalse((self.root/'people/not-in-context/people.md').exists())
+  decision={'action':'reply','text':'仍然可以自然回复'}
+  social.apply_decision(db,{'target_group':'1','event_key':'1:test'},decision,{},cfg,1)
+  self.assertEqual(db.execute('SELECT text FROM candidates').fetchone()[0],decision['text']);db.close()

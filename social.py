@@ -219,6 +219,8 @@ def choose(db,cfg,memory,job,task=None):
              'trigger':'本群有新消息' if source==target else '隔壁群有新消息，可考虑分享；当前群不活跃则保持安静',
              'candidates':material,
              'forward_bundles':merged_forward.available(db,cfg,target)}
+    previous_error=db.execute('SELECT value FROM metrics WHERE key=?',('state_update_error:'+str(target),)).fetchone()
+    if previous_error:payload['memory_contract']['last_rejected_update']=previous_error[0]
     if archive.enabled(cfg):
         disk=archive.Archive(cfg['context_dir'])
         try:
@@ -414,7 +416,9 @@ def tick(db,cfg,sessions=None):
                 for key in ('prompt_tokens','completion_tokens'):usage[key]=usage.get(key,0)+next_usage.get(key,0)
                 usage['_vision_status']=next_usage.get('_vision_status',{})
             if decision['action']=='read':decision={'action':'wait','text':'','reason':'本轮读取次数达到上限'}
-            if decision.get('state_updates'):application.update_states(cfg,job['target_group'],payload,decision['state_updates'],db)
+            if decision.get('state_updates'):
+                outcome=application.apply_worker_states(cfg,job['target_group'],payload,decision['state_updates'],db)
+                if not outcome['saved']:decision['_state_update_rejected']=outcome['error']
             decision['_context_watermark']=payload['context_watermark']
             decision['_deadline_reply']=bool(window['forced'])
             decision['_forward_bundles']=payload.get('forward_bundles',[])

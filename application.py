@@ -73,8 +73,8 @@ def read(db,cfg,target,payload,call):
  name=call['name'];args=call['arguments']
  if name=='get_memory_schema':return {k:memory_store.SCHEMA['$defs'][k] for k in ('FactInput','RelationInput','StateInput','GroupPortraitInput','PersonPortraitInput')}
  if name=='update_states':
-  update_states(cfg,target,payload,args,db)
-  return {'saved':True,'emoticon_catalog':emoticons.catalog(cfg['context_dir'],target),'member_memories':member_context(cfg,target,payload),'group_state':group_state(cfg,target)}
+  outcome=apply_worker_states(cfg,target,payload,args,db)
+  return {**outcome,'emoticon_catalog':emoticons.catalog(cfg['context_dir'],target),'member_memories':member_context(cfg,target,payload),'group_state':group_state(cfg,target)}
  if name=='read_context':return {k:v for k,v in payload.items() if k not in ('_vision','_attached_images','tool_results')}
  if name=='list_emoticons':return emoticons.catalog(cfg['context_dir'],target)
  if name=='search_emoticons':
@@ -153,6 +153,20 @@ def member_context(cfg,group,payload,budget=24000):
         text=full[:limit];budget-=len(text)
         result.append({'user_id':user,'markdown':text,'truncated':len(text)<len(full),'profile':profile['current_judgment']})
     return result
+
+
+def apply_worker_states(cfg,group,payload,args,db=None):
+    """Reject invalid memory without aborting a separately validated chat action."""
+    try:update_states(cfg,group,payload,args,db)
+    except ValueError as exc:
+        code=str(exc)
+        if not re.fullmatch('[a-z_]{1,100}',code):code='invalid_memory_update'
+        if db is not None:
+            with db:db.execute('INSERT OR REPLACE INTO metrics VALUES (?,?)',('state_update_error:'+str(group),code))
+        return {'saved':False,'error':code,'instruction':'状态更新未通过校验，没有采纳无效内容。核对群归属、真实证据和schema；聊天决策仍可独立完成。'}
+    if db is not None:
+        with db:db.execute('DELETE FROM metrics WHERE key=?',('state_update_error:'+str(group),))
+    return {'saved':True}
 
 
 def update_states(cfg,group,payload,args,db=None):
