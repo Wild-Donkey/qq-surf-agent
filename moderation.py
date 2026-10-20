@@ -94,7 +94,7 @@ def flush(db, cfg, api, now=None):
 
 
 def check_recovery(db,cfg,api,now=None):
-    """Durable 30-second timer, with live QQ metadata as evidence."""
+    """Durable five-minute timer, with live QQ metadata as evidence."""
     import participants,social
     now=time.time() if now is None else now
     if cfg.get('mode')!='live':return
@@ -110,7 +110,7 @@ def check_recovery(db,cfg,api,now=None):
     group=row['group_id']
     if group not in {str(g['id']) for g in cfg.get('groups',[]) if g.get('enabled',True)}:return
     with db:
-        if not db.execute('UPDATE bot_mutes SET next_check=? WHERE group_id=? AND next_check<=?',(now+30,group,now)).rowcount:return
+        if not db.execute('UPDATE bot_mutes SET next_check=? WHERE group_id=? AND next_check<=?',(now+300,group,now)).rowcount:return
     try:
         login=agent.onebot_call(api,'get_login_info')
         if str(login.get('user_id'))!=str(cfg['bot_id']):raise ValueError('wrong_bot')
