@@ -61,7 +61,13 @@ def prepare(payload):
             raw,animated=fetch(item['url'])
             images.extend([{'type':'input_text','text':'附图 '+reference+('（动图首帧）' if animated else '')},
                            {'type':'input_image','image_url':'data:image/jpeg;base64,'+base64.b64encode(raw).decode(),'detail':'high'}])
-            details.append({'reference':reference,'animated_first_frame':animated})
+            detail={'reference':reference,'animated_first_frame':animated}
+            if item.get('cache_root'):
+                key=hashlib.sha256(raw).hexdigest()+'.jpg'
+                path=Path(item['cache_root'])/'media'/key;path.parent.mkdir(parents=True,exist_ok=True)
+                if not path.exists():path.write_bytes(raw)
+                detail.update(media_key=key,event_key=item.get('event_key'),group_id=item.get('group_id'),url=item['url'])
+            details.append(detail)
         except Exception as exc:
             failed.append({'reference':reference,'error':type(exc).__name__})
     clean['vision_status']={'attached':details,'unavailable':failed}

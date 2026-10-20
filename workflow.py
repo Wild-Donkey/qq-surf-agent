@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Persistent group-to-group relay. No third-party dependencies or external LLM calls."""
+import archive
+import emoticons
 import argparse
 from collections import Counter
 from contextlib import closing
@@ -56,6 +58,8 @@ def connect(path):
         db.execute('ALTER TABLE deliveries ADD COLUMN caption TEXT')
     if 'context_watermark' not in {r[1] for r in db.execute('PRAGMA table_info(deliveries)')}:
         db.execute('ALTER TABLE deliveries ADD COLUMN context_watermark REAL')
+    if 'emoticon' not in {r[1] for r in db.execute('PRAGMA table_info(candidates)')}:
+        db.execute('ALTER TABLE candidates ADD COLUMN emoticon TEXT')
     social.ensure_schema(db)
     alerts.ensure_schema(db)
     participants.ensure_schema(db)
@@ -96,6 +100,8 @@ def normalize(event):
             if urlsplit(url).scheme == 'https':
                 # Never accept arbitrary local files or CQ instructions from source messages.
                 images.append({'url': url, 'key': str(data.get('file') or urlsplit(url).path)})
+    labels=emoticons.describe(parts)
+    if labels:text.append(labels)
     return '\n'.join(text).strip()[:6000], images[:3]
 
 
@@ -154,6 +160,7 @@ def ingest(db, event, cfg, now=None):
     source = str(event.get('group_id', ''))
     if event.get('post_type') != 'message' or event.get('message_type') != 'group' or source not in groups:
         return 'ignored'
+    archive.record_event(cfg,event,now)
     if str(event.get('user_id', '')) == str(cfg['bot_id']):
         return 'self'
     message_id = event.get('message_id')
@@ -227,7 +234,7 @@ def dispatch(db, cfg, api_cfg, now=None):
     if str(login.get('user_id')) != str(cfg['bot_id']):
         raise ValueError('bot 账号不一致')
     groups = configured_groups(cfg)
-    jobs = db.execute("""SELECT d.*,c.source_group,c.text,c.images,c.kind FROM deliveries d
+    jobs = db.execute("""SELECT d.*,c.source_group,c.text,c.images,c.kind,c.emoticon FROM deliveries d
         JOIN candidates c ON c.id=d.candidate_id WHERE d.status='approved' AND c.status='approved'
         AND ((c.kind='reply' AND d.created<=?) OR (c.kind!='reply' AND d.created<=?))
         ORDER BY d.id LIMIT 50""", (now-cfg.get('reply_delay_seconds',0),now-cfg.get('hold_seconds',120))).fetchall()
@@ -270,7 +277,8 @@ def dispatch(db, cfg, api_cfg, now=None):
             shares=db.execute("SELECT count(*) FROM deliveries d JOIN candidates c ON c.id=d.candidate_id WHERE d.target_group=? AND c.kind!='reply' AND d.status IN ('sent','uncertain') AND d.updated>?",(target,now-86400)).fetchone()[0]
             if shares>=cfg.get('max_shares_per_group_day',3):
                 db.rollback();continue
-        if day >= cfg.get('max_per_group_day',3) or global_day >= cfg.get('max_total_day',10) or last and now-last < cooldown:
+        group_cap=cfg.get('max_per_group_day',3);total_cap=cfg.get('max_total_day',10)
+        if (group_cap is not None and day>=group_cap) or (total_cap is not None and global_day>=total_cap) or last and now-last < cooldown:
             db.rollback()
             continue
         if not db.execute("UPDATE deliveries SET status='uncertain',updated=? WHERE id=? AND status='approved'",(now,job['id'])).rowcount:
@@ -279,7 +287,8 @@ def dispatch(db, cfg, api_cfg, now=None):
         db.commit()
         source = groups[job['source_group']]['name']
         text=job['text'] if job['kind']=='reply' else MARK+source+'\n'+(job['caption'] or job['text'])
-        parts = [{'type':'text','data':{'text':text}}]
+        parts = [{'type':'text','data':{'text':text}}] if text else []
+        if job['emoticon']:parts.extend(emoticons.segments(cfg['context_dir'],target,json.loads(job['emoticon'])))
         if cfg.get('send_images', True):
             parts.extend({'type':'image','data':{'file':image['url']}} for image in json.loads(job['images']))
         try:
@@ -290,6 +299,7 @@ def dispatch(db, cfg, api_cfg, now=None):
                 with db:db.execute("UPDATE deliveries SET status='approved' WHERE id=?",(job['id'],))
                 continue
             result = agent.onebot_call(api_cfg,'send_group_msg',{'group_id':int(target),'message':parts})
+            archive.record_event(cfg,{'group_id':target,'message_id':str(result['message_id']),'user_id':cfg['bot_id'],'time':now,'message':parts})
             with db:
                 db.execute("UPDATE deliveries SET status='sent',message_id=?,updated=? WHERE id=?",(str(result['message_id']),now,job['id']))
                 db.execute('INSERT OR IGNORE INTO seen VALUES (?,?,?)',(target,job['fingerprint'],now))

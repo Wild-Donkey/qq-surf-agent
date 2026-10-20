@@ -17,18 +17,18 @@
   "refresh_before_send": true,
   "tick_seconds": 1,
   "hold_seconds": 120,
-  "context_messages": 12,
-  "context_char_budget": 3000,
+  "context_messages": 100,
+  "context_char_budget": 24000,
   "raw_retention_hours": 48,
   "max_messages_per_group": 200,
   "dedupe_retention_days": 30,
   "candidate_ttl_hours": 24,
   "max_event_age_seconds": 300,
-  "max_per_group_day": 20,
-  "max_total_day": 60,
+  "max_per_group_day": null,
+  "max_total_day": null,
   "max_per_tick": 1,
   "group_cooldown_seconds": 3600,
-  "reply_cooldown_seconds": 120,
+  "reply_cooldown_seconds": 5,
   "send_images": true,
   "exclude_keywords": [],
   "groups": [],
@@ -61,5 +61,8 @@
   "usage_report": {
     "enabled": true,
     "interval_seconds": 10800
+  },
+  "durable_archive": {
+    "enabled": true
   }
 }

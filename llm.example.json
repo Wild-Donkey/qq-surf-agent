@@ -6,6 +6,6 @@
   "api_key": "",
   "api_key_env": "OPENAI_API_KEY",
   "reasoning_effort": "minimal",
-  "max_completion_tokens": 1024,
+  "max_completion_tokens": 4096,
   "max_requests_per_day": null
 }

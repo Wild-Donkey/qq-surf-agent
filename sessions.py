@@ -13,9 +13,8 @@ class GroupSession:
 
     def recall(self,memory,user=None):
         key=str(user or '')
-        if key not in self.cached_memory:
-            if len(self.cached_memory)>=8:self.cached_memory.pop(next(iter(self.cached_memory)))
-            self.cached_memory[key]=memory.retrieve(self.group_id,user,4500)
+        if key not in self.cached_memory and len(self.cached_memory)>=8:self.cached_memory.pop(next(iter(self.cached_memory)))
+        self.cached_memory[key]=memory.retrieve(self.group_id,user,12000)
         return self.cached_memory[key]
 
 
@@ -47,11 +46,14 @@ class SessionPool:
 
     @staticmethod
     def _refresh(db,session,cfg):
-        rows=db.execute('SELECT text,created FROM events WHERE group_id=? ORDER BY created DESC LIMIT ?',
-                        (session.group_id,cfg.get('context_messages',12))).fetchall()
-        budget=cfg.get('context_char_budget',3000);turns=[]
+        rows=db.execute('''SELECT e.text,e.created,e.message_id,j.user_id FROM events e LEFT JOIN social_jobs j
+            ON j.event_key=e.group_id||':'||e.message_id AND j.target_group=e.group_id
+            WHERE e.group_id=? ORDER BY e.created DESC LIMIT ?''',
+                        (session.group_id,cfg.get('context_messages',100))).fetchall()
+        budget=cfg.get('context_char_budget',24000);turns=[]
         for row in rows:
-            text=row['text'][:min(budget,500)]
+            speaker='自己' if row['message_id'].startswith('bot:') else str(row['user_id'] or '未缓存发言者')
+            text=('['+speaker+'] '+row['text'])[:min(budget,1200)]
             if not text:continue
             turns.append({'text':text,'time':row['created']});budget-=len(text)
             if budget<=0:break
