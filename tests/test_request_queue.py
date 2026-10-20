@@ -77,3 +77,17 @@ class RequestQueueTests(unittest.TestCase):
   rq.bind(self.db,'1',['1:3'],decision,delivery,self.now)
   with patch('agent.onebot_call',side_effect=[{'user_id':99},{'message_id':77}]) as api:self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+1),1)
   self.assertEqual([p['data']['id'] for p in api.call_args.args[2]['messages']],['1','2'])
+
+ def test_mute_keeps_request_without_model_requeue(self):
+  import moderation
+  self.add(1,'你是谁')
+  with self.db:self.db.execute("UPDATE social_jobs SET status='decided'")
+  event={'post_type':'notice','notice_type':'group_ban','sub_type':'ban','group_id':1,'user_id':99,'operator_id':3,'time':self.now,'duration':500}
+  moderation.ingest(self.db,event,self.cfg,self.now)
+  rq.sync(self.db,self.cfg,self.now+1)
+  self.assertEqual(self.db.execute('SELECT status FROM social_jobs').fetchone()[0],'decided')
+  self.assertEqual(len(rq.pending(self.db,'1')),1)
+  event.update(sub_type='lift_ban',duration=0,time=self.now+2)
+  moderation.ingest(self.db,event,self.cfg,self.now+2)
+  rq.sync(self.db,self.cfg,self.now+3)
+  self.assertEqual(self.db.execute('SELECT status FROM social_jobs').fetchone()[0],'pending')

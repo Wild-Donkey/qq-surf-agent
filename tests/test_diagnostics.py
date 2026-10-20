@@ -35,3 +35,15 @@ class DiagnosticTests(unittest.TestCase):
         with patch('diagnostics.run_codex',side_effect=ValueError('codex_run_failed_1')):diagnostics.tick(self.db,self.cfg,self.root,1001)
         diagnostics.enqueue(self.db,self.cfg,1002)
         self.assertEqual(self.db.execute('SELECT count(*) FROM diagnostic_jobs').fetchone()[0],1)
+
+    def test_mute_notice_does_not_launch_diagnosis(self):
+        alerts.record(self.db,'bot_muted','已暂停',now=1000)
+        diagnostics.enqueue(self.db,self.cfg,1001)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM diagnostic_jobs').fetchone()[0],0)
+    def test_diagnostics_respects_shared_qps(self):
+        alerts.record(self.db,'worker_ValueError','任务异常',now=1000)
+        with self.db:self.db.execute("INSERT INTO model_calls(created,status) VALUES (1000,'ok')")
+        with patch('diagnostics.run_codex') as run:
+            self.assertFalse(diagnostics.tick(self.db,self.cfg,self.root,1001))
+            run.assert_not_called()
+        self.assertEqual(self.db.execute('SELECT status FROM diagnostic_jobs').fetchone()[0],'pending')

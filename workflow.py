@@ -404,7 +404,7 @@ def dispatch(db, cfg, api_cfg, now=None):
         except Exception as exc:
             with db:
                 db.execute('UPDATE deliveries SET error=? WHERE id=?',(type(exc).__name__,job['id']))
-            alerts.record(db,'delivery_'+type(exc).__name__,'群消息投递失败，结果已标记为待核实。')
+            alerts.record(db,'delivery_'+type(exc).__name__,'群消息投递失败，结果已标记为待核实。',scope=str(target),details={'target_group':str(target),'delivery_id':job['id'],'kind':job['kind'],'error':type(exc).__name__,'retcode':getattr(exc,'retcode',None)})
             break
         if sent >= cfg.get('max_per_tick',1):
             break

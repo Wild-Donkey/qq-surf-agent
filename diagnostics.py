@@ -10,6 +10,7 @@ import agent
 import alerts
 import chatgpt_auth
 import repairs
+import model_gate
 import social
 
 ROOT=Path(__file__).resolve().parent
@@ -28,7 +29,7 @@ def connect(path):
 def enqueue(db,cfg,now):
     if not cfg.get('diagnostics',{}).get('enabled'):return
     interval=cfg['diagnostics'].get('cooldown_seconds',3600)
-    for alert in db.execute("SELECT * FROM alerts WHERE last_seen>? AND code!='usage_report' AND code NOT LIKE 'diagnostic_%'",(now-300,)).fetchall():
+    for alert in db.execute("SELECT * FROM alerts WHERE last_seen>? AND code NOT IN ('usage_report','bot_muted','group_invite_accepted') AND code NOT LIKE 'diagnostic_%'",(now-300,)).fetchall():
         last=db.execute('SELECT created FROM diagnostic_jobs WHERE fingerprint=? ORDER BY created DESC LIMIT 1',(alert['fingerprint'],)).fetchone()
         if last and now-last['created']<interval:continue
         with db:db.execute("INSERT OR IGNORE INTO diagnostic_jobs(alert_id,fingerprint,created,status) VALUES (?,?,?,'pending')",(alert['id'],alert['fingerprint'],now))
@@ -137,15 +138,18 @@ def tick(db,cfg,root=ROOT,now=None):
         return True
     job=db.execute("SELECT * FROM diagnostic_jobs WHERE status='pending' ORDER BY id LIMIT 1").fetchone()
     if not job:return False
+    call=model_gate.reserve(db,cfg,now,background=True)
+    if call is None:return False
     with db:
-        if not db.execute("UPDATE diagnostic_jobs SET status='running' WHERE id=? AND status='pending'",(job['id'],)).rowcount:return False
-        call=db.execute("INSERT INTO model_calls(created,status) VALUES (?,'reserved')",(now,)).lastrowid
+        if not db.execute("UPDATE diagnostic_jobs SET status='running' WHERE id=? AND status='pending'",(job['id'],)).rowcount:
+            db.execute("UPDATE model_calls SET status='cancelled' WHERE id=?",(call,))
+            return False
     try:
         directory=snapshot(db,root,job)
         result,usage=run_codex(directory,cfg)
         with db:
             db.execute("UPDATE diagnostic_jobs SET status='done',report_path=? WHERE id=?",(str(directory/'answer.json'),job['id']))
-            db.execute("UPDATE model_calls SET status='ok',input_tokens=?,output_tokens=? WHERE id=?",(usage.get('input_tokens',0),usage.get('output_tokens',0),call))
+            db.execute("UPDATE model_calls SET status='ok',input_tokens=?,output_tokens=? WHERE id=?",(usage.get('input_tokens',usage.get('prompt_tokens',0)),usage.get('output_tokens',usage.get('completion_tokens',0)),call))
         recovery=repairs.perform(db,cfg,root,job,result)
         with db:db.execute('UPDATE diagnostic_jobs SET status=? WHERE id=?',('repair_pending' if recovery['status']=='deferred' else 'done',job['id']))
         if recovery['status']!='deferred':alerts.record(db,'diagnostic_result','排障'+('完成：' if recovery['status'] in ('repaired','verified') else '未修复：')+recovery['message'],scope=str(job['id']))

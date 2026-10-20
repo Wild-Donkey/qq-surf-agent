@@ -37,12 +37,14 @@ def pending(db,group):
 
 def sync(db,cfg,now=None):
  import participants
+ import moderation
  now=time.time() if now is None else now
  with db:
   for row in db.execute("SELECT r.event_key,d.status FROM user_requests r JOIN deliveries d ON d.id=r.delivery_id WHERE r.status='queued'").fetchall():
-   state={'sent':'done','already_seen':'done','uncertain':'uncertain','failed':'failed','cancelled':'cancelled','superseded':'pending','expired':'pending'}.get(row['status'])
+   state={'sent':'done','already_seen':'done','uncertain':'uncertain','failed':'failed','cancelled':'cancelled','superseded':'pending','expired':'pending','blocked_muted':'pending'}.get(row['status'])
    if state:db.execute('UPDATE user_requests SET status=?,next_attempt=? WHERE event_key=?',(state,now+5,row['event_key']))
   for row in db.execute("SELECT event_key,group_id FROM user_requests WHERE status='pending' AND next_attempt<=?",(now,)).fetchall():
+   if moderation.is_muted(db,row['group_id'],now):continue
    pause=db.execute('SELECT until_time FROM operator_pause WHERE group_id=?',(row['group_id'],)).fetchone()
    if pause and pause[0]>now:continue
    if participants.humans_recent(db,row['group_id'],cfg,now):
