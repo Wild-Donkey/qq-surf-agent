@@ -314,9 +314,8 @@ def dispatch(db, cfg, api_cfg, now=None):
             except Exception as exc:
                 alerts.record(db,'refresh_before_send_failed','发送前刷新群消息失败，暂不发旧草稿。',details={'stage':'get_group_msg_history','error':type(exc).__name__,'retcode':getattr(exc,'retcode',None)})
                 continue
-        # After max_hold_seconds, force-send even if newer context arrived (conversation moved on).
-        max_hold = cfg.get('max_hold_seconds', 20)
-        if not job['deadline_reply'] and (now - job['created']) < max_hold and newer_context(db,target,job['context_watermark']):
+        # Only a frozen continuous-traffic window may ignore newer arrivals.
+        if not job['deadline_reply'] and newer_context(db,target,job['context_watermark']):
             with db:db.execute("UPDATE deliveries SET status='superseded',updated=? WHERE id=?",(now,job['id']))
             continue
         paused=db.execute('SELECT until_time FROM operator_pause WHERE group_id=?',(target,)).fetchone()
@@ -346,18 +345,6 @@ def dispatch(db, cfg, api_cfg, now=None):
             db.rollback()
             continue
         db.commit()
-        if job['kind']=='forward':
-            mid=str(job['text']).strip()
-            try:
-                result=agent.onebot_call(api_cfg,'send_group_forward_msg',{'group_id':int(target),'messages':[{'type':'node','data':{'id':mid}}]})
-                with db:
-                    db.execute("UPDATE deliveries SET status='sent',message_id=?,updated=? WHERE id=?",(str(result.get('message_id','')),now,job['id']))
-                    db.execute('INSERT OR IGNORE INTO seen VALUES (?,?,?)',(target,job['fingerprint'],now))
-                continue
-            except Exception as exc:
-                with db:db.execute("UPDATE deliveries SET status='failed',updated=?,error=? WHERE id=?",(now,type(exc).__name__,job['id']))
-                alerts.record(db,'forward_failed','转发消息失败。',scope=target,details={'message_id':mid,'error':type(exc).__name__,'retcode':getattr(exc,'retcode',None)})
-                continue
         source = groups[job['source_group']]['name']
         text=job['text'] if job['kind']=='reply' else MARK+source+'\n'+(job['caption'] or job['text'])
         parts = [{'type':'text','data':{'text':text}}] if text else []
@@ -365,13 +352,21 @@ def dispatch(db, cfg, api_cfg, now=None):
         if cfg.get('send_images', True):
             parts.extend({'type':'image','data':{'file':image['url']}} for image in json.loads(job['images']))
         try:
-            if not job['deadline_reply'] and (now - job['created']) < max_hold and newer_context(db,target,job['context_watermark']):
+            if not job['deadline_reply'] and newer_context(db,target,job['context_watermark']):
                 with db:db.execute("UPDATE deliveries SET status='superseded',updated=? WHERE id=?",(time.time(),job['id']))
                 continue
             if not participants.humans_recent(db,target,cfg):
                 with db:db.execute("UPDATE deliveries SET status='approved' WHERE id=?",(job['id'],))
                 continue
-            result = agent.onebot_call(api_cfg,'send_group_msg',{'group_id':int(target),'message':parts})
+            if job['kind']=='forward':
+                mid=str(job['text']).strip()
+                if not db.execute('SELECT 1 FROM events WHERE group_id=? AND message_id=?',(target,mid)).fetchone():
+                    raise ValueError('forward_message_outside_group')
+                result=agent.onebot_call(api_cfg,'send_group_forward_msg',{'group_id':int(target),'messages':[{'type':'node','data':{'id':mid}}]})
+                parts=[{'type':'text','data':{'text':'[转发消息 '+mid+']'}}]
+                text='[转发消息 '+mid+']'
+            else:
+                result = agent.onebot_call(api_cfg,'send_group_msg',{'group_id':int(target),'message':parts})
             archive.record_event(cfg,{'group_id':target,'message_id':str(result['message_id']),'user_id':cfg['bot_id'],'time':now,'message':parts})
             with db:
                 db.execute("UPDATE deliveries SET status='sent',message_id=?,updated=? WHERE id=?",(str(result['message_id']),now,job['id']))

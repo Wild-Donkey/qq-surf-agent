@@ -20,21 +20,23 @@ TOOLS=[
 READS={'get_memory_schema','update_states','read_context','get_member','search_history','list_emoticons'}
 def decode(raw):
  value=parse_json(raw,'worker_api')
- # Normalize simplified formats the model may emit when reasoning is off.
- if isinstance(value,dict):
-  if 'action' in value and 'call' not in value:
-   value={'call':{'name':'finish_turn','arguments':value}}
-  elif value.get('type')=='json_object' and isinstance(value.get('content'),str):
-   try:value=parse_json(value['content'],'worker_api')
-   except Exception:pass
-  if isinstance(value,dict) and 'type' in value and 'call' not in value and 'action' not in value:
-   t=value.pop('type');value={'call':{'name':'finish_turn','arguments':{'action':t,**value}}}
-  # Some models place fields like 'quality' at top level instead of inside arguments.
-  if isinstance(value,dict) and isinstance(value.get('call'),dict) and isinstance(value['call'].get('arguments'),dict):
-   extra={k:v for k,v in value.items() if k!='call'}
-   if extra:
-    value['call']['arguments'].update(extra)
-    value={'call':value['call']}
+ # Bounded normalization; never let outer fields override explicit arguments.
+ for _ in range(4):
+  if not isinstance(value,dict):break
+  if value.get('type')=='json_object' and isinstance(value.get('content'),str):
+   if set(value)-{'type','content'}:raise ValueError('ambiguous_api_envelope')
+   value=parse_json(value['content'],'worker_api');continue
+  if 'call' not in value:
+   if 'action' in value:value={'call':{'name':'finish_turn','arguments':value}}
+   elif value.get('type') in ('wait','reply','share','forward'):
+    value={'call':{'name':'finish_turn','arguments':{'action':value['type'],**{k:v for k,v in value.items() if k!='type'}}}}
+  if isinstance(value.get('call'),dict) and isinstance(value['call'].get('arguments'),dict):
+   args=dict(value['call']['arguments']);extra={k:v for k,v in value.items() if k!='call'}
+   # Only the historically misplaced quality field has an unambiguous meaning.
+   if set(extra)-{'quality'}:raise ValueError('ambiguous_api_envelope')
+   if any(k in args and args[k]!=v for k,v in extra.items()):raise ValueError('conflicting_api_arguments')
+   args.update(extra);value={'call':{**value['call'],'arguments':args}}
+  break
  if not isinstance(value,dict) or set(value)-{'call'}:raise ValueError('worker_must_call_application_api')
  call=value.get('call')
  if not isinstance(call,dict) or set(call)-{'name','arguments'}:raise ValueError('invalid_api_call')

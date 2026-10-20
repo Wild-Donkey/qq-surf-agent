@@ -91,26 +91,33 @@ def call_model(model,payload):
     guide=ROOT/'agent.md'
     instructions=SYSTEM+'\n应用开放接口：'+json.dumps(application.TOOLS,ensure_ascii=False)+('\n\n'+guide.read_text()[:8000] if guide.exists() else '')
     model=dict(model);model['_text_format']={'type':'json_object'}
-    # Fast path: no reasoning. Retry with low reasoning if output is invalid.
-    fast=dict(model);fast['reasoning_effort']='none'
-    fast_raw=''
-    try:
-        raw,usage=generate_text(fast,instructions,payload)
-        return validate_decision(raw),usage
-    except Exception:
-        fast_raw=raw if 'raw' in dir() else fast_raw
-        slow=dict(model);slow['reasoning_effort']=model.get('reasoning_effort','low')
-        slow['max_completion_tokens']=max(model.get('max_completion_tokens',4096),3000)
+    fast=dict(model)
+    # Subscription inference has no reasoning/token controls in this adapter.
+    if model.get('provider')!='chatgpt':fast['reasoning_effort']='none'
+    raw,usage=generate_text(fast,instructions,payload)
+    try:return validate_decision(raw),usage
+    except (ValueError,ProtocolError):
+        # Network/auth/quota errors never enter this handler. Each actual retry
+        # needs its own shared reservation; standalone checks make one request.
+        reserve=model.get('_retry_reserve')
+        if reserve is None:raise
+        retry_id=reserve(usage)
+        slow=dict(model)
+        if model.get('provider')!='chatgpt':
+            slow['reasoning_effort']='low'
+            slow['max_completion_tokens']=max(model.get('max_completion_tokens',4096),3000)
+        next_usage={}
         try:
-            raw,usage=generate_text(slow,instructions,payload)
-            return validate_decision(raw),usage
-        except Exception as slow_exc:
-            slow_raw=raw if 'raw' in dir() else ''
-            try:
-                with open(ROOT/'runtime'/'raw_failures.log','a') as f:
-                    f.write(f'\n=== {time.strftime("%H:%M:%S")} ===\nFAST: {fast_raw}\nSLOW: {slow_raw}\n')
-            except Exception:pass
-            raise ValueError(f'{slow_exc} [fast={repr(fast_raw[:200])}|slow={repr(slow_raw[:200])}]') from None
+            raw,next_usage=generate_text(slow,instructions+'\n上次输出未通过接口校验。只返回一个 call 信封；状态只写必要的简短增量。',payload)
+            result=validate_decision(raw)
+        except Exception:
+            model['_retry_complete'](retry_id,False,next_usage)
+            raise
+        model['_retry_complete'](retry_id,True,next_usage)
+        combined=dict(next_usage)
+        for key in ('prompt_tokens','completion_tokens','total_tokens'):
+            combined[key]=usage.get(key,0)
+        return result,combined
 
 
 def generate_text(model,instructions,payload):
@@ -242,6 +249,9 @@ def apply_decision(db,job,decision,candidates,cfg,now):
     if decision['action']=='forward':
         mid=str(decision.get('message_id') or '').strip()
         if not mid:raise ValueError('转发缺少 message_id')
+        allowed=decision.get('_forward_message_ids',[])
+        if mid not in allowed or not db.execute('SELECT 1 FROM events WHERE group_id=? AND message_id=?',(target,mid)).fetchone():
+            raise ValueError('forward_message_outside_context')
         fp=hashlib.sha256(('forward:'+target+':'+job['event_key']+':'+mid).encode()).hexdigest()
         with db:
             db.execute("INSERT OR IGNORE INTO candidates(fingerprint,source_group,text,images,created,status,kind) VALUES (?,?,?,?,?,?,?)",
@@ -249,7 +259,8 @@ def apply_decision(db,job,decision,candidates,cfg,now):
             cid=db.execute('SELECT id FROM candidates WHERE fingerprint=?',(fp,)).fetchone()[0]
             db.execute('INSERT OR IGNORE INTO deliveries(candidate_id,target_group,fingerprint,status,created,updated) VALUES (?,?,?,?,?,?)',
                        (cid,target,fp,'approved',now,now))
-            db.execute('UPDATE deliveries SET context_watermark=? WHERE candidate_id=? AND target_group=?',(now,cid,target))
+            db.execute('UPDATE deliveries SET context_watermark=? WHERE candidate_id=? AND target_group=?',(decision.get('_context_watermark'),cid,target))
+            db.execute('UPDATE deliveries SET deadline_reply=? WHERE candidate_id=? AND target_group=?',(int(bool(decision.get('_deadline_reply'))),cid,target))
         return
     text=decision['text'].strip()
     selection=decision.get('emoticon')
@@ -319,6 +330,15 @@ def tick(db,cfg,sessions=None):
         if call_id is None:return
         with db:
             for item in batch:db.execute("UPDATE social_jobs SET status='processing' WHERE event_key=? AND target_group=?",(item['event_key'],item['target_group']))
+        def reserve_retry(first_usage):
+            with db:db.execute('UPDATE model_calls SET input_tokens=?,output_tokens=? WHERE id=?',(first_usage.get('prompt_tokens',0),first_usage.get('completion_tokens',0),model['_active_call_id']))
+            retry_id=model_gate.reserve(db,cfg)
+            while retry_id is None:
+                time.sleep(.5);retry_id=model_gate.reserve(db,cfg)
+            return retry_id
+        def complete_retry(retry_id,ok,retry_usage):
+            with db:db.execute("UPDATE model_calls SET status=?,input_tokens=?,output_tokens=?,error=? WHERE id=?",('ok' if ok else 'failed',retry_usage.get('prompt_tokens',0),retry_usage.get('completion_tokens',0),None if ok else 'format_retry_failed',retry_id))
+        model=dict(model,_retry_reserve=reserve_retry,_retry_complete=complete_retry,_active_call_id=call_id)
         try:
             task=sessions.task(db,cfg,job,now)
             payload,candidates=choose(db,cfg,memory,job,task)
@@ -361,6 +381,7 @@ def tick(db,cfg,sessions=None):
                 read_call=model_gate.reserve(db,cfg)
                 while read_call is None:
                     time.sleep(.5);read_call=model_gate.reserve(db,cfg)
+                model['_active_call_id']=read_call
                 try:decision,next_usage=call_model(model,payload)
                 except Exception:
                     with db:db.execute("UPDATE model_calls SET status='failed',error='worker_read_call_failed' WHERE id=?",(read_call,))
@@ -373,6 +394,7 @@ def tick(db,cfg,sessions=None):
             if decision.get('state_updates'):application.update_states(cfg,job['target_group'],payload,decision['state_updates'],db)
             decision['_context_watermark']=payload['context_watermark']
             decision['_deadline_reply']=bool(window['forced'])
+            decision['_forward_message_ids']=[str(v['message_id']) for v in payload['recent_target_messages'] if not str(v['message_id']).startswith('bot:')]
             # Neither speaker judgments nor memory edits from a worker are consumed.
             vision_status=usage.get('_vision_status',{})
             if vision_status.get('unavailable'):alerts.record(db,'vision_read_failed','部分群聊图片读取失败。',details={'unavailable':vision_status['unavailable'],'attached_count':len(vision_status.get('attached',[]))})
