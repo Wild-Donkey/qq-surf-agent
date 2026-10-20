@@ -23,3 +23,12 @@ class EmoticonTests(unittest.TestCase):
    social.apply_decision(db,{'target_group':'1','event_key':'1:2'},{'action':'reply','text':'','emoticon':{'kind':'face','id':identity}}, {},{'context_dir':root},1)
    self.assertEqual(json.loads(db.execute('select emoticon from candidates').fetchone()[0])['id'],identity)
    db.close()
+ def test_duplicate_event_repairs_missing_human_activity(self):
+  with tempfile.TemporaryDirectory() as root:
+   cfg={'bot_id':'99','groups':[{'id':'1','name':'test'}],'context_dir':root,'interaction':{'enabled':True},'human_presence':{'enabled':True,'known_humans':['3']}}
+   db=workflow.connect(':memory:');event={'post_type':'message','message_type':'group','group_id':1,'message_id':7,'user_id':3,'time':100,'message':[{'type':'text','data':{'text':'你好'}}]}
+   workflow.ingest(db,event,cfg,100)
+   with db:db.execute('DELETE FROM speaker_events')
+   self.assertEqual(workflow.ingest(db,event,cfg,101),'duplicate_event')
+   import participants
+   self.assertTrue(participants.humans_recent(db,'1',cfg,101));db.close()

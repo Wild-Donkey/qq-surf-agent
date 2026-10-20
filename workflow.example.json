@@ -28,7 +28,7 @@
   "max_total_day": null,
   "max_per_tick": 1,
   "group_cooldown_seconds": 3600,
-  "reply_cooldown_seconds": 5,
+  "reply_cooldown_seconds": 0,
   "send_images": true,
   "exclude_keywords": [],
   "groups": [],

@@ -177,12 +177,12 @@ def ingest(db, event, cfg, now=None):
         try:memory.observe(event,cfg['bot_id'],now)
         finally:memory.close()
     with db:
+        participants.observe(db,event,cfg,text,now)
         inserted = db.execute('INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?)',
                               (source, str(message_id), fp, text, json.dumps(images), now)).rowcount
         if not inserted:
             return 'duplicate_event'
         activity=min(now,float(event.get('time',now)))
-        participants.observe(db,event,cfg,text,now)
         db.execute('INSERT INTO group_activity VALUES (?,?) ON CONFLICT(group_id) DO UPDATE SET last_member_message=max(last_member_message,excluded.last_member_message)',(source,activity))
         db.execute('INSERT OR IGNORE INTO seen VALUES (?,?,?)', (source, fp, now))
         refresh_memory(db, source, cfg)
@@ -237,7 +237,7 @@ def dispatch(db, cfg, api_cfg, now=None):
     jobs = db.execute("""SELECT d.*,c.source_group,c.text,c.images,c.kind,c.emoticon FROM deliveries d
         JOIN candidates c ON c.id=d.candidate_id WHERE d.status='approved' AND c.status='approved'
         AND ((c.kind='reply' AND d.created<=?) OR (c.kind!='reply' AND d.created<=?))
-        ORDER BY d.id LIMIT 50""", (now-cfg.get('reply_delay_seconds',0),now-cfg.get('hold_seconds',120))).fetchall()
+        ORDER BY CASE WHEN c.kind='reply' THEN 0 ELSE 1 END,d.id LIMIT 50""", (now-cfg.get('reply_delay_seconds',0),now-cfg.get('hold_seconds',120))).fetchall()
     sent = 0
     for job in jobs:
         target = job['target_group']
@@ -272,7 +272,7 @@ def dispatch(db, cfg, api_cfg, now=None):
         day = db.execute("SELECT count(*) FROM deliveries WHERE target_group=? AND status IN ('sent','uncertain') AND updated>?",(target,now-86400)).fetchone()[0]
         global_day = db.execute("SELECT count(*) FROM deliveries WHERE status IN ('sent','uncertain') AND updated>?",(now-86400,)).fetchone()[0]
         last = db.execute("SELECT max(updated) FROM deliveries WHERE target_group=? AND status IN ('sent','uncertain')",(target,)).fetchone()[0]
-        cooldown=cfg.get('reply_cooldown_seconds',120) if job['kind']=='reply' else cfg.get('group_cooldown_seconds',3600)
+        cooldown=cfg.get('reply_cooldown_seconds',0) if job['kind']=='reply' else cfg.get('group_cooldown_seconds',3600)
         if job['kind']!='reply':
             shares=db.execute("SELECT count(*) FROM deliveries d JOIN candidates c ON c.id=d.candidate_id WHERE d.target_group=? AND c.kind!='reply' AND d.status IN ('sent','uncertain') AND d.updated>?",(target,now-86400)).fetchone()[0]
             if shares>=cfg.get('max_shares_per_group_day',3):
@@ -433,6 +433,20 @@ def main():
             def stopped(*_): stop.set()
             signal.signal(signal.SIGTERM,stopped); signal.signal(signal.SIGINT,stopped)
             thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+            # Migration: existing cached messages still count toward human presence.
+            for prior in db.execute('SELECT e.*,j.user_id FROM events e JOIN social_jobs j ON j.event_key=e.group_id||":"||e.message_id AND j.target_group=e.group_id WHERE e.created>?',(time.time()-300,)).fetchall():
+                with db:participants.observe(db,{'group_id':prior['group_id'],'message_id':prior['message_id'],'user_id':prior['user_id'],'time':prior['created']},cfg,prior['text'],time.time())
+            # Recover messages arriving during a restart, without replaying old conversations.
+            for group in configured_groups(cfg):
+                if not group_is_active(db,group,cfg):continue
+                try:
+                    history=agent.onebot_call(api_cfg,'get_group_msg_history',{'group_id':int(group),'count':100,'disable_get_url':True})
+                    for event in history.get('messages',[]):
+                        event=dict(event,post_type='message',message_type='group',group_id=group)
+                        archive.record_event(cfg,event)
+                        if time.time()-float(event.get('time',0))<=180:ingest(db,event,cfg)
+                except Exception as exc:
+                    alerts.record(db,'startup_history_failed','重启时补读群消息失败。',scope=group,details={'error':type(exc).__name__})
             sessions=SessionPool()
             print('群间 workflow 已启动，监听127.0.0.1:{}，模式{}'.format(cfg.get('port',8766),cfg.get('mode','preview')),flush=True)
             try:
