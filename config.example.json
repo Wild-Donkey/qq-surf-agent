@@ -1,0 +1,13 @@
+{
+  "sources": [],
+  "sender": {
+    "mode": "onebot",
+    "url": "http://127.0.0.1:3000",
+    "group_id": "",
+    "expected_self_id": "",
+    "token_env": "SURF_BRIDGE_TOKEN",
+    "token_file": "runtime/onebot.token",
+    "send_images": true
+  },
+  "llm": {"enabled": false}
+}

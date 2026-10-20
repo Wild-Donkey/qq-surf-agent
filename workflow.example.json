@@ -1,0 +1,40 @@
+{
+  "mode": "preview",
+  "bot_id": "YOUR_BOT_QQ",
+  "port": 8767,
+  "database": "runtime/workflow.sqlite3",
+  "context_dir": "context",
+  "llm_file": "llm.local.json",
+  "inactive_group_days": 14,
+  "tick_seconds": 10,
+  "hold_seconds": 120,
+  "context_messages": 12,
+  "context_char_budget": 3000,
+  "raw_retention_hours": 48,
+  "max_messages_per_group": 200,
+  "dedupe_retention_days": 30,
+  "candidate_ttl_hours": 24,
+  "max_event_age_seconds": 300,
+  "max_per_group_day": 20,
+  "max_total_day": 60,
+  "max_per_tick": 1,
+  "group_cooldown_seconds": 3600,
+  "reply_cooldown_seconds": 120,
+  "send_images": true,
+  "exclude_keywords": [],
+  "groups": [],
+  "routes": {},
+  "interaction": {
+    "enabled": true,
+    "flush_seconds": 60,
+    "debounce_seconds": 8,
+    "min_model_interval_seconds": 15,
+    "active_group_seconds": 1800,
+    "idle_flush_seconds": 300
+  },
+  "alerts": {
+    "owner_qq": "YOUR_OWNER_QQ",
+    "cooldown_seconds": 1800
+  },
+  "operator_pause_minutes": 5
+}
