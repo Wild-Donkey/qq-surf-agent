@@ -25,7 +25,7 @@ SYSTEM='''你是一个已公开说明是 AI bot 的普通群友，喜欢搬屎�
 分享只能选择给定 candidate_id，不得编造链接、图片或消息来源。不要跨群传播私人对话或个人信息。
 遇到他人明确拒绝互动、明显不合适、刚回应过同一段话或只有完全看不懂的图片时可以 wait。不能仅以没@你、没点名、无新话题或无知识增量为理由沉默。不冒充真实成员，不捏造亲身经历。
 应用管理上下文加载、存储、账号类型、触发和发信资格。你负责理解群聊并通过状态接口更新群和成员状态，不自己管理文件、flush和调度。
-你只调用应用接口。格式严格为 {"call":{"name":"reply","arguments":{"text":"简短回复","emoticon":null}}}。
+你只调用应用接口。格式严格为 {"call":{"name":"reply","arguments":{"text":"简短回复","emoticon":null,"quality":"natural"}}}。
 可调用 read_context、get_member、search_history、list_emoticons 读取，update_states 写入状态；通常调用 finish_turn 同时提交 group_state、members 和 action（wait/reply/share）完成本轮。成员状态保留有根据的称呼、关系、话题、偏好、尚未解决的事情及不想被打扰的意愿，不把玩笑当事实。当前目标群由应用固定，不能指定群号或收件人。一次只调用一个接口。'''
 
 
@@ -33,6 +33,7 @@ def ensure_schema(db):
     db.executescript('''
     CREATE TABLE IF NOT EXISTS social_jobs(event_key TEXT,target_group TEXT,source_group TEXT,user_id TEXT,
       created REAL,status TEXT,decision TEXT,error TEXT,PRIMARY KEY(event_key,target_group));
+    CREATE TABLE IF NOT EXISTS reaction_windows(group_id TEXT PRIMARY KEY,cutoff REAL,forced INTEGER);
     CREATE TABLE IF NOT EXISTS model_calls(id INTEGER PRIMARY KEY,created REAL,status TEXT,
       input_tokens INTEGER,output_tokens INTEGER,error TEXT);
     ''');db.commit()
@@ -223,7 +224,7 @@ def apply_decision(db,job,decision,candidates,cfg,now):
         if selection:db.execute('UPDATE candidates SET emoticon=? WHERE id=?',(json.dumps(selection),cid))
         db.execute('INSERT OR IGNORE INTO deliveries(candidate_id,target_group,fingerprint,status,created,updated) VALUES (?,?,?,?,?,?)',
                    (cid,target,fp,'approved',now,now))
-        db.execute('UPDATE deliveries SET context_watermark=? WHERE candidate_id=? AND target_group=?',(decision.get('_context_watermark'),cid,target))
+        db.execute('UPDATE deliveries SET context_watermark=?,deadline_reply=? WHERE candidate_id=? AND target_group=?',(decision.get('_context_watermark'),int(bool(decision.get('_deadline_reply'))),cid,target))
 
 
 def tick(db,cfg,sessions=None):
@@ -255,12 +256,20 @@ def tick(db,cfg,sessions=None):
         interval=max(1/max_qps,float(interaction.get('min_model_interval_seconds',0)))
         if last and now-last<interval:return
         quiet=max(0,float(interaction.get('quiet_seconds',5)))
-        job=db.execute("""SELECT * FROM social_jobs j WHERE j.status='pending' AND j.created<=?
-          AND NOT EXISTS (SELECT 1 FROM social_jobs newer WHERE newer.target_group=j.target_group
-          AND newer.status='pending' AND newer.created>?)
-          ORDER BY j.created,j.event_key,j.target_group LIMIT 1""",(now,now-quiet)).fetchone()
+        maximum=max(quiet,float(interaction.get('max_wait_seconds',20)))
+        job=db.execute("""SELECT j.* FROM social_jobs j LEFT JOIN reaction_windows w ON w.group_id=j.target_group
+          WHERE j.status='pending' AND ((w.group_id IS NOT NULL AND j.created<=w.cutoff)
+          OR (w.group_id IS NULL AND (j.created<=? OR NOT EXISTS
+          (SELECT 1 FROM social_jobs newer WHERE newer.target_group=j.target_group AND newer.status='pending' AND newer.created>?))))
+          ORDER BY j.created,j.event_key,j.target_group LIMIT 1""",(now-maximum,now-quiet)).fetchone()
         if not job:return
-        batch=pending_batch(db,job,interaction,now)
+        window=db.execute('SELECT * FROM reaction_windows WHERE group_id=?',(job['target_group'],)).fetchone()
+        if not window:
+            latest=db.execute("SELECT max(created) FROM social_jobs WHERE target_group=? AND status='pending'",(job['target_group'],)).fetchone()[0]
+            forced=int(now-job['created']>=maximum and latest>now-quiet)
+            with db:db.execute('INSERT INTO reaction_windows VALUES (?,?,?)',(job['target_group'],now,forced))
+            window=db.execute('SELECT * FROM reaction_windows WHERE group_id=?',(job['target_group'],)).fetchone()
+        batch=pending_batch(db,job,interaction,window['cutoff'])
         paused=db.execute('SELECT until_time FROM operator_pause WHERE group_id=?',(job['target_group'],)).fetchone()
         operator_paused=bool(paused and paused[0]>now)
         activity=db.execute('SELECT last_member_message FROM group_activity WHERE group_id=?',(job['target_group'],)).fetchone()
@@ -286,6 +295,7 @@ def tick(db,cfg,sessions=None):
                     reference=f'message_{index+1}_image_{number+1}';references.append(reference)
                     payload['_vision'].append({'reference':reference,'url':url,'cache_root':str(memory.root),'event_key':item['event_key'],'group_id':item['source_group']})
                 payload['unread_messages'][index]['image_references']=references
+            payload['window']={'forced_after_max_wait':bool(window['forced']),'cutoff':window['cutoff'],'instruction':'只判断当前窗口；新到消息由下一窗口处理。难接、没把握或回复尬就wait，不要求一定发言。'}
             payload['batch_instruction']='按时间顺序读完全部 unread_messages；它们可能是积压。以 recent_target_messages 的最新群聊状态接话，不要逐句补回过时的话。'
             context_users={v['speaker'] for v in payload['recent_target_messages'] if v['speaker'].isdigit()}
             context_users.update(v['user_id'] for v in payload.get('last_two_hours',{}).get('messages',[]) if str(v['user_id']).isdigit())
@@ -316,8 +326,9 @@ def tick(db,cfg,sessions=None):
                 for key in ('prompt_tokens','completion_tokens'):usage[key]=usage.get(key,0)+next_usage.get(key,0)
                 usage['_vision_status']=next_usage.get('_vision_status',{})
             if decision['action']=='read':decision={'action':'wait','text':'','reason':'本轮读取次数达到上限'}
-            if decision.get('state_updates'):application.update_states(cfg,job['target_group'],payload,decision['state_updates'])
+            if decision.get('state_updates'):application.update_states(cfg,job['target_group'],payload,decision['state_updates'],db)
             decision['_context_watermark']=payload['context_watermark']
+            decision['_deadline_reply']=bool(window['forced'])
             # Neither speaker judgments nor memory edits from a worker are consumed.
             vision_status=usage.get('_vision_status',{})
             if vision_status.get('unavailable'):alerts.record(db,'vision_read_failed','部分群聊图片读取失败。',details=vision_status)
@@ -326,12 +337,14 @@ def tick(db,cfg,sessions=None):
                 decision=dict(decision,action='wait',text='',reason='已读，人工暂停或消息过旧，不补发回复')
             if not participants.humans_recent(db,job['target_group'],cfg):
                 decision=dict(decision,action='wait',text='',reason='过去五分钟没有确认的真人发言，保持安静')
-            more=db.execute("SELECT 1 FROM social_jobs WHERE target_group=? AND status='pending' LIMIT 1",(job['target_group'],)).fetchone()
+            more=db.execute("SELECT 1 FROM social_jobs WHERE target_group=? AND status='pending' AND created<=? LIMIT 1",(job['target_group'],window['cutoff'])).fetchone()
             with db:
                 if more:
                     summary=excerpt(summary,800)
                     db.execute('INSERT OR REPLACE INTO metrics VALUES (?,?)',(summary_key,summary))
-                else:db.execute('DELETE FROM metrics WHERE key=?',(summary_key,))
+                else:
+                    db.execute('DELETE FROM metrics WHERE key=?',(summary_key,))
+                    db.execute('DELETE FROM reaction_windows WHERE group_id=?',(job['target_group'],))
             if more:decision=dict(decision,action='wait',text='',reason='本窗口还有未读消息，读完后再接话')
             apply_decision(db,batch[-1],decision,candidates,cfg,now)
             with db:

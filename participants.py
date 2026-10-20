@@ -45,6 +45,11 @@ def observe(db,event,cfg,text,now):
     sender=event.get('sender',{})
     if sender.get('is_bot') is True or sender.get('bot') is True:
         set_profile(db,user,'bot',1,'接口标记为机器人','metadata',now);return
+    managed=db.execute("SELECT r.target_id FROM account_relations r JOIN speaker_profiles p ON p.user_id=r.target_id WHERE r.controller_id=? AND p.kind='bot' LIMIT 1",(user,)).fetchone()
+    samples=db.execute('SELECT count(*) FROM speaker_events WHERE user_id=?',(user,)).fetchone()[0]
+    old_kind=db.execute('SELECT kind FROM speaker_profiles WHERE user_id=?',(user,)).fetchone()
+    if managed and samples>=3 and (not old_kind or old_kind['kind']!='bot'):
+        set_profile(db,user,'human',.9,'应用推断：多轮参与群聊，并定向管理已识别bot '+managed[0]+' 的上下文；属于运营者角色，可被更强证据修正','app_rules',now)
     existing=db.execute('SELECT kind FROM speaker_profiles WHERE user_id=?',(user,)).fetchone()
     if existing and existing['kind']=='bot':return
     # Repeated high-rate output is suspicious, not evidence of human activity.
@@ -59,8 +64,8 @@ def evidence(db,batch):
     result=[]
     for user in dict.fromkeys(str(row['user_id']) for row in batch):
         profile=db.execute('SELECT kind,confidence,reason,source FROM speaker_profiles WHERE user_id=?',(user,)).fetchone()
-        samples=db.execute('SELECT text FROM speaker_events WHERE user_id=? ORDER BY created DESC LIMIT 20',(user,)).fetchall()
-        result.append({'id':user,'current_judgment':dict(profile) if profile else {'kind':'unknown'},'recent_samples':[r['text'][:180] for r in reversed(samples)]})
+        samples=db.execute('SELECT event_key,group_id,text,created FROM speaker_events WHERE user_id=? ORDER BY created DESC LIMIT 20',(user,)).fetchall()
+        result.append({'id':user,'current_judgment':dict(profile) if profile else {'kind':'unknown'},'recent_samples':[r['text'][:180] for r in reversed(samples)],'evidence_records':[dict(r) for r in reversed(samples)]})
     return result
 
 

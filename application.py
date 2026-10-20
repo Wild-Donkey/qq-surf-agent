@@ -2,7 +2,7 @@
 import json,time,hashlib,re
 from pathlib import Path
 from memory import MarkdownMemory,atomic_write,safe_id
-import archive,emoticons
+import archive,emoticons,participants
 TOOLS=[
  {'name':'update_states','description':'提交群状态 group_state 和成员状态 members:[{user_id,state}]，应用校验后落盘'},
  {'name':'finish_turn','description':'一次提交状态并结束：group_state,members,action(wait/reply/share),text,candidate_id,emoticon,reason'},
@@ -22,12 +22,17 @@ def decode(raw):
  if call.get('name') not in {t['name'] for t in TOOLS}:raise ValueError('api_not_exposed')
  args=call.get('arguments',{})
  if not isinstance(args,dict):raise ValueError('invalid_api_arguments')
- name=call['name'];allowed={'read_context':set(),'get_member':{'user_id'},'search_history':{'query'},'list_emoticons':set(),'reply':{'text','emoticon'},'share':{'candidate_id','text'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason'}}[name]
+ name=call['name'];allowed={'read_context':set(),'get_member':{'user_id'},'search_history':{'query'},'list_emoticons':set(),'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality'}}[name]
  if set(args)-allowed:raise ValueError('argument_not_exposed')
  if name in ('reply','share') and not isinstance(args.get('text',''),str):raise ValueError('invalid_text')
  return {'name':name,'arguments':args}
 def decision(call):
  name=call['name'];args=call['arguments']
+ quality=args.get('quality')
+ if (name in ('reply','share') or name=='finish_turn' and args.get('action') in ('reply','share')) and quality!='natural':
+  result={'action':'wait','text':'','reason':'回复难接、尴尬或尚未确认自然，跳过本轮'}
+  if name=='finish_turn':result['state_updates']={k:args[k] for k in ('group_state','members','images') if k in args}
+  return result
  if name=='finish_turn':
   if args.get('action') not in ('wait','reply','share'):raise ValueError('invalid_finish_action')
   if not isinstance(args.get('text',''),str):raise ValueError('invalid_text')
@@ -37,7 +42,7 @@ def decision(call):
 def read(db,cfg,target,payload,call):
  name=call['name'];args=call['arguments']
  if name=='update_states':
-  update_states(cfg,target,payload,args)
+  update_states(cfg,target,payload,args,db)
   return {'saved':True,'member_memories':member_context(cfg,target,payload),'group_state':group_state(cfg,target)}
  if name=='read_context':return {k:v for k,v in payload.items() if k not in ('_vision','_attached_images','tool_results')}
  if name=='list_emoticons':return emoticons.catalog(cfg['context_dir'],target)
@@ -88,7 +93,7 @@ def member_context(cfg,group,payload,budget=16000):
     return result
 
 
-def update_states(cfg,group,payload,args):
+def update_states(cfg,group,payload,args,db=None):
     allowed={str(p['id']) for p in payload.get('member_profiles',[])}
     members=args.get('members',[]);state=args.get('group_state');images=args.get('images',[])
     available={v['reference']:v for v in payload.get('_attached_images',[])}
@@ -100,8 +105,23 @@ def update_states(cfg,group,payload,args):
     if state is not None and (not isinstance(state,str) or len(state)>2800):raise ValueError('invalid_group_state')
     # Validate the entire request before writing any file.
     for item in members:
-        if not isinstance(item,dict) or set(item)!={'user_id','state'} or str(item['user_id']) not in allowed:raise ValueError('member_outside_context')
+        if not isinstance(item,dict) or not {'user_id','state'}<=set(item) or set(item)-{'user_id','state','account_kind','confidence','reason','evidence_keys'} or str(item['user_id']) not in allowed:raise ValueError('member_outside_context')
         if not isinstance(item['state'],str) or len(item['state'])>3000:raise ValueError('invalid_member_state')
+        if 'account_kind' in item:
+            if db is None or item['account_kind'] not in ('human','bot','unknown'):raise ValueError('invalid_account_kind')
+            confidence=item.get('confidence');keys=item.get('evidence_keys',[])
+            if isinstance(confidence,bool) or not isinstance(confidence,(float,int)) or not 0<=confidence<=1 or not isinstance(keys,list) or not 1<=len(keys)<=20:raise ValueError('invalid_account_evidence')
+            for key in keys:
+                if not isinstance(key,str) or not db.execute('SELECT 1 FROM speaker_events WHERE event_key=? AND group_id=? AND user_id=?',(key,str(group),str(item['user_id']))).fetchone():raise ValueError('unverified_account_evidence')
+    if db is not None:
+        with db:
+            for item in members:
+                if 'account_kind' not in item:continue
+                user=str(item['user_id']);old=db.execute('SELECT kind,source FROM speaker_profiles WHERE user_id=?',(user,)).fetchone()
+                if participants.trusted_kind(user,cfg) or old and (old['kind']=='bot' or old['source']=='metadata'):continue
+                confidence=item['confidence'];kind=item['account_kind'] if confidence>=.85 else 'unknown'
+                participants.set_profile(db,user,kind,confidence,'应用校验证据 '+','.join(item['evidence_keys'])+'；'+str(item.get('reason',''))[:250],'app_validated_worker',time.time())
+        participants.flush_profiles(db,cfg['context_dir'],members)
     for image in images:
         meta=available[image['reference']]
         if meta.get('event_key'):archive.record_visual(cfg,meta['event_key'],image['description'],meta.get('media_key',''))

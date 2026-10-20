@@ -4,7 +4,7 @@ from unittest.mock import patch
 import application,workflow,participants,social
 class ApplicationTests(unittest.TestCase):
  def test_worker_only_calls_exposed_api(self):
-  self.assertEqual(social.validate_decision('{"call":{"name":"reply","arguments":{"text":"好"}}}')['action'],'reply')
+  self.assertEqual(social.validate_decision('{"call":{"name":"reply","arguments":{"text":"好","quality":"natural"}}}')['action'],'reply')
   for raw in [{'action':'reply','text':'hi','speakers':[]},{'call':{'name':'set_member','arguments':{}}},{'call':{'name':'reply','arguments':{'text':'hi','target_group':'999'}}},{'call':{'name':'wait','arguments':{}},'group_state':'overwrite'}]:
    with self.assertRaises(ValueError):application.decode(json.dumps(raw))
  def test_application_marks_target_not_controller(self):
@@ -42,3 +42,16 @@ class ApplicationTests(unittest.TestCase):
  def test_finish_turn_carries_state_via_api_only(self):
   d=application.decision(application.decode(json.dumps({'call':{'name':'finish_turn','arguments':{'action':'wait','group_state':'正在聊bot','members':[]}}})))
   self.assertEqual(d['action'],'wait');self.assertEqual(d['state_updates']['group_state'],'正在聊bot')
+ def test_member_kind_api_requires_real_evidence_and_preserves_known_bot(self):
+  with tempfile.TemporaryDirectory() as root:
+   cfg={'context_dir':root,'bot_id':'99'};db=workflow.connect(':memory:')
+   for user in ('7','9'):
+    with db:participants.observe(db,{'user_id':user,'group_id':'1','message_id':user,'time':1000},cfg,'真实样本',1000)
+   payload={'member_profiles':[{'id':'7','current_judgment':{}},{'id':'9','current_judgment':{}}]}
+   args={'members':[{'user_id':'7','state':'参与群聊','account_kind':'human','confidence':.9,'reason':'有上下文证据','evidence_keys':['1:fake']}]}
+   with self.assertRaises(ValueError):application.update_states(cfg,'1',payload,args,db)
+   args['members'][0]['evidence_keys']=['1:7'];application.update_states(cfg,'1',payload,args,db)
+   self.assertEqual(db.execute("SELECT kind FROM speaker_profiles WHERE user_id='7'").fetchone()[0],'human')
+   with db:participants.set_profile(db,'9','bot',.97,'已有证据','app_rules',1001)
+   args['members'][0].update(user_id='9',evidence_keys=['1:9']);application.update_states(cfg,'1',payload,args,db)
+   self.assertEqual(db.execute("SELECT kind FROM speaker_profiles WHERE user_id='9'").fetchone()[0],'bot');db.close()

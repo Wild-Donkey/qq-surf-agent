@@ -60,6 +60,8 @@ def connect(path):
         db.execute('ALTER TABLE deliveries ADD COLUMN context_watermark REAL')
     if 'emoticon' not in {r[1] for r in db.execute('PRAGMA table_info(candidates)')}:
         db.execute('ALTER TABLE candidates ADD COLUMN emoticon TEXT')
+    if 'deadline_reply' not in {r[1] for r in db.execute('PRAGMA table_info(deliveries)')}:
+        db.execute('ALTER TABLE deliveries ADD COLUMN deadline_reply INTEGER DEFAULT 0')
     social.ensure_schema(db)
     alerts.ensure_schema(db)
     participants.ensure_schema(db)
@@ -256,7 +258,7 @@ def dispatch(db, cfg, api_cfg, now=None):
             except Exception as exc:
                 alerts.record(db,'refresh_before_send_failed','发送前刷新群消息失败，暂不发旧草稿。',details={'stage':'get_group_msg_history','error':type(exc).__name__,'retcode':getattr(exc,'retcode',None)})
                 continue
-        if newer_context(db,target,job['context_watermark']):
+        if not job['deadline_reply'] and newer_context(db,target,job['context_watermark']):
             with db:db.execute("UPDATE deliveries SET status='superseded',updated=? WHERE id=?",(now,job['id']))
             continue
         paused=db.execute('SELECT until_time FROM operator_pause WHERE group_id=?',(target,)).fetchone()
@@ -293,7 +295,7 @@ def dispatch(db, cfg, api_cfg, now=None):
         if cfg.get('send_images', True):
             parts.extend({'type':'image','data':{'file':image['url']}} for image in json.loads(job['images']))
         try:
-            if newer_context(db,target,job['context_watermark']):
+            if not job['deadline_reply'] and newer_context(db,target,job['context_watermark']):
                 with db:db.execute("UPDATE deliveries SET status='superseded',updated=? WHERE id=?",(time.time(),job['id']))
                 continue
             if not participants.humans_recent(db,target,cfg):
