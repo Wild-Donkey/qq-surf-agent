@@ -29,6 +29,12 @@ def decode(raw):
    except Exception:pass
   if isinstance(value,dict) and 'type' in value and 'call' not in value and 'action' not in value:
    t=value.pop('type');value={'call':{'name':'finish_turn','arguments':{'action':t,**value}}}
+  # Some models place fields like 'quality' at top level instead of inside arguments.
+  if isinstance(value,dict) and isinstance(value.get('call'),dict) and isinstance(value['call'].get('arguments'),dict):
+   extra={k:v for k,v in value.items() if k!='call'}
+   if extra:
+    value['call']['arguments'].update(extra)
+    value={'call':value['call']}
  if not isinstance(value,dict) or set(value)-{'call'}:raise ValueError('worker_must_call_application_api')
  call=value.get('call')
  if not isinstance(call,dict) or set(call)-{'name','arguments'}:raise ValueError('invalid_api_call')
