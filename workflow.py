@@ -21,6 +21,7 @@ import social
 import alerts
 import usage_report
 import onboarding
+import participants
 from memory import MarkdownMemory
 from sessions import SessionPool
 
@@ -53,8 +54,11 @@ def connect(path):
         db.execute("ALTER TABLE candidates ADD COLUMN kind TEXT DEFAULT 'share'")
     if 'caption' not in {r[1] for r in db.execute('PRAGMA table_info(deliveries)')}:
         db.execute('ALTER TABLE deliveries ADD COLUMN caption TEXT')
+    if 'context_watermark' not in {r[1] for r in db.execute('PRAGMA table_info(deliveries)')}:
+        db.execute('ALTER TABLE deliveries ADD COLUMN context_watermark REAL')
     social.ensure_schema(db)
     alerts.ensure_schema(db)
+    participants.ensure_schema(db)
     db.commit()
     return db
 
@@ -67,6 +71,10 @@ def group_is_active(db,group,cfg,now=None):
     now=time.time() if now is None else now
     row=db.execute('SELECT last_member_message FROM group_activity WHERE group_id=?',(str(group),)).fetchone()
     return bool(row and 0<=now-row[0]<=cfg.get('inactive_group_days',14)*86400)
+
+
+def newer_context(db,group,watermark):
+    return watermark is not None and bool(db.execute("SELECT 1 FROM events WHERE group_id=? AND created>? AND message_id NOT LIKE 'bot:%' LIMIT 1",(group,watermark)).fetchone())
 
 
 def normalize(event):
@@ -167,6 +175,7 @@ def ingest(db, event, cfg, now=None):
         if not inserted:
             return 'duplicate_event'
         activity=min(now,float(event.get('time',now)))
+        participants.observe(db,event,cfg,text,now)
         db.execute('INSERT INTO group_activity VALUES (?,?) ON CONFLICT(group_id) DO UPDATE SET last_member_message=max(last_member_message,excluded.last_member_message)',(source,activity))
         db.execute('INSERT OR IGNORE INTO seen VALUES (?,?,?)', (source, fp, now))
         refresh_memory(db, source, cfg)
@@ -200,6 +209,7 @@ def prune(db, cfg, now=None):
                        (group, group, cfg.get('max_messages_per_group', 200)))
             refresh_memory(db, group, cfg)
         cutoff = now - cfg.get('dedupe_retention_days', 30)*86400
+        participants.prune(db,now)
         db.execute('DELETE FROM seen WHERE created<?', (cutoff,))
         db.execute("UPDATE deliveries SET status='expired',updated=? WHERE status IN ('pending','approved') AND created<?", (now, now-cfg.get('candidate_ttl_hours', 24)*3600))
         db.execute("UPDATE candidates SET text='',images='[]' WHERE created<?", (now-cfg.get('raw_retention_hours',48)*3600,))
@@ -220,13 +230,26 @@ def dispatch(db, cfg, api_cfg, now=None):
     jobs = db.execute("""SELECT d.*,c.source_group,c.text,c.images,c.kind FROM deliveries d
         JOIN candidates c ON c.id=d.candidate_id WHERE d.status='approved' AND c.status='approved'
         AND ((c.kind='reply' AND d.created<=?) OR (c.kind!='reply' AND d.created<=?))
-        ORDER BY d.id LIMIT 50""", (now-cfg.get('reply_delay_seconds',3),now-cfg.get('hold_seconds',120))).fetchall()
+        ORDER BY d.id LIMIT 50""", (now-cfg.get('reply_delay_seconds',0),now-cfg.get('hold_seconds',120))).fetchall()
     sent = 0
     for job in jobs:
         target = job['target_group']
         if target not in groups or job['source_group'] not in groups:
             continue
         if not group_is_active(db,target,cfg,now):
+            continue
+        if not participants.humans_recent(db,target,cfg,now):continue
+        if cfg.get('refresh_before_send',False):
+            try:
+                history=agent.onebot_call(api_cfg,'get_group_msg_history',{'group_id':int(target),'count':12,'disable_get_url':True})
+                for event in history.get('messages',[]):
+                    event=dict(event,post_type='message',message_type='group',group_id=target)
+                    ingest(db,event,cfg)
+            except Exception as exc:
+                alerts.record(db,'refresh_before_send_failed','发送前刷新群消息失败，暂不发旧草稿。',details={'stage':'get_group_msg_history','error':type(exc).__name__,'retcode':getattr(exc,'retcode',None)})
+                continue
+        if newer_context(db,target,job['context_watermark']):
+            with db:db.execute("UPDATE deliveries SET status='superseded',updated=? WHERE id=?",(now,job['id']))
             continue
         paused=db.execute('SELECT until_time FROM operator_pause WHERE group_id=?',(target,)).fetchone()
         if paused and paused[0]>now:continue
@@ -260,6 +283,12 @@ def dispatch(db, cfg, api_cfg, now=None):
         if cfg.get('send_images', True):
             parts.extend({'type':'image','data':{'file':image['url']}} for image in json.loads(job['images']))
         try:
+            if newer_context(db,target,job['context_watermark']):
+                with db:db.execute("UPDATE deliveries SET status='superseded',updated=? WHERE id=?",(time.time(),job['id']))
+                continue
+            if not participants.humans_recent(db,target,cfg):
+                with db:db.execute("UPDATE deliveries SET status='approved' WHERE id=?",(job['id'],))
+                continue
             result = agent.onebot_call(api_cfg,'send_group_msg',{'group_id':int(target),'message':parts})
             with db:
                 db.execute("UPDATE deliveries SET status='sent',message_id=?,updated=? WHERE id=?",(str(result['message_id']),now,job['id']))

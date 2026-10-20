@@ -6,6 +6,15 @@
   "context_dir": "context",
   "llm_file": "llm.local.json",
   "inactive_group_days": 14,
+  "human_presence": {
+    "enabled": true,
+    "timeout_seconds": 300,
+    "confidence_threshold": 0.85,
+    "known_humans": [],
+    "known_bots": []
+  },
+  "reply_delay_seconds": 0,
+  "refresh_before_send": true,
   "tick_seconds": 1,
   "hold_seconds": 120,
   "context_messages": 12,
@@ -28,6 +37,7 @@
     "enabled": true,
     "flush_seconds": 60,
     "max_qps": 0.2,
+    "quiet_seconds": 5,
     "max_batch_messages": 30,
     "batch_char_budget": 12000,
     "min_model_interval_seconds": 5,

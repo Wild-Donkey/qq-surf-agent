@@ -46,7 +46,7 @@ class SocialTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.db=workflow.connect(':memory:')
         self.cfg={'bot_id':'99','groups':[{'id':1,'name':'A'},{'id':2,'name':'B'}],
-                  'context_dir':self.tmp.name,'interaction':{'enabled':True,'debounce_seconds':0,'min_model_interval_seconds':0}}
+                  'context_dir':self.tmp.name,'interaction':{'enabled':True,'quiet_seconds':0,'min_model_interval_seconds':0}}
     def tearDown(self):self.db.close();self.tmp.cleanup()
     def test_message_creates_persistent_job_and_local_memory(self):
         workflow.ingest(self.db,event(),self.cfg)
@@ -116,5 +116,25 @@ class SocialTests(unittest.TestCase):
         batch=social.pending_batch(self.db,job,{'batch_char_budget':6000},time.time())
         self.assertEqual(len(batch),1)
         self.assertEqual(self.db.execute("SELECT count(*) FROM social_jobs WHERE status='pending'").fetchone()[0],3)
+    def test_waits_five_seconds_after_latest_message(self):
+        self.cfg['interaction']['quiet_seconds']=5
+        now=time.time()
+        workflow.ingest(self.db,event(1),self.cfg,now-6)
+        workflow.ingest(self.db,event(2),self.cfg,now-2)
+        with patch('social.load_model',return_value={'enabled':True,'api_key':'test'}),patch('social.call_model',return_value=({'action':'wait','text':''},{})) as call:
+            social.tick(self.db,self.cfg);call.assert_not_called()
+            with self.db:self.db.execute('UPDATE social_jobs SET created=created-4')
+            social.tick(self.db,self.cfg);call.assert_called_once()
+            self.assertEqual(len(call.call_args[0][1]['unread_messages']),2)
+    def test_window_does_not_speak_until_all_chunks_are_read(self):
+        self.cfg['interaction']['max_batch_messages']=1
+        workflow.ingest(self.db,event(1),self.cfg);workflow.ingest(self.db,event(2),self.cfg)
+        answer={'action':'reply','text':'可以接话','context_summary':'已读窗口话题'}
+        with patch('social.load_model',return_value={'enabled':True,'api_key':'test'}),patch('social.call_model',return_value=(answer,{})):
+            social.tick(self.db,self.cfg)
+            self.assertEqual(self.db.execute("SELECT count(*) FROM candidates WHERE kind='reply'").fetchone()[0],0)
+            with self.db:self.db.execute('UPDATE model_calls SET created=created-6')
+            social.tick(self.db,self.cfg)
+            self.assertEqual(self.db.execute("SELECT count(*) FROM candidates WHERE kind='reply'").fetchone()[0],1)
 
 if __name__=='__main__':unittest.main()
