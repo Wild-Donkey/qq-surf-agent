@@ -53,7 +53,7 @@ def fetch(url):
 
 def prepare(payload):
     """Only private in-process _vision entries become image inputs, never arbitrary model text."""
-    clean={k:v for k,v in payload.items() if k!='_vision'}
+    clean={k:v for k,v in payload.items() if k not in ('_vision','_attached_images')}
     images=[];failed=[];details=[]
     for item in payload.get('_vision',[])[:4]:
         reference=item['reference']

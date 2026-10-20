@@ -37,7 +37,7 @@ def enqueue(db,cfg,now):
 def snapshot(db,root,job):
     directory=root/'runtime'/'diagnostics'/str(job['id'])
     directory.mkdir(parents=True,exist_ok=True,mode=0o700)
-    for name in ['agent.py','workflow.py','social.py','sessions.py','memory.py','alerts.py','supervisor.py','usage_report.py','onboarding.py','diagnostics.py','chatgpt_auth.py','vision.py','participants.py','agent.md']:
+    for name in ['agent.py','workflow.py','social.py','sessions.py','memory.py','alerts.py','supervisor.py','usage_report.py','onboarding.py','diagnostics.py','chatgpt_auth.py','vision.py','participants.py','application.py','archive.py','emoticons.py','agent.md']:
         source=root/name
         if source.exists():shutil.copyfile(source,directory/name)
     alert=db.execute('SELECT code,summary,count,details FROM alerts WHERE id=?',(job['alert_id'],)).fetchone()

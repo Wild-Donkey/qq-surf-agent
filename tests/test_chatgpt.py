@@ -75,7 +75,7 @@ class ChatGPTTests(unittest.TestCase):
         with patch.object(auth,'access_token',return_value='secret'),patch.object(auth.urllib.request,'urlopen',return_value=io.BytesIO(b'')):
             with self.assertRaises(ValueError):auth.infer('selected','rules',{})
     def test_planner_uses_oauth_adapter(self):
-        with patch.object(auth,'available',return_value=True),patch.object(auth,'infer',return_value=('{"action":"wait","text":""}',{})):
+        with patch.object(auth,'available',return_value=True),patch.object(auth,'infer',return_value=('{"call":{"name":"wait","arguments":{}}}',{})):
             result,_=social.call_model({'enabled':True,'provider':'chatgpt','model':'selected'}, {})
             self.assertEqual(result['action'],'wait')
     def test_stream_final_items_survive_empty_completed_output(self):

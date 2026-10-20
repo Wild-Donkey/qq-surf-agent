@@ -54,6 +54,14 @@ class Archive:
         with self.db:
             inserted=self.db.execute('''INSERT OR IGNORE INTO messages(group_id,message_id,user_id,nickname,text,images,reply_to,mentions,created,received,raw_json)
               VALUES (?,?,?,?,?,?,?,?,?,?,?)''',(group,mid,str(event.get('user_id','')),name,text,json.dumps(images),quote,json.dumps(mentions),created,received,json.dumps(event,ensure_ascii=False))).rowcount
+            if not inserted and not event.get('archive_origin'):
+                existing=self.db.execute('SELECT raw_json FROM messages WHERE group_id=? AND message_id=?',(group,mid)).fetchone()
+                if existing and json.loads(existing[0]).get('archive_origin')=='working_cache_backfill':
+                    self.db.execute('UPDATE messages SET user_id=?,nickname=?,text=?,images=?,reply_to=?,mentions=?,created=?,raw_json=?,exported=0 WHERE group_id=? AND message_id=?',(str(event.get('user_id','')),name,text,json.dumps(images),quote,json.dumps(mentions),created,json.dumps(event,ensure_ascii=False),group,mid))
+                    if self.fts:
+                        ident=self.db.execute('SELECT id FROM messages WHERE group_id=? AND message_id=?',(group,mid)).fetchone()[0]
+                        self.db.execute('DELETE FROM message_search WHERE rowid=?',(ident,))
+                        self.db.execute('INSERT INTO message_search(rowid,group_id,terms) VALUES (?,?,?)',(ident,group,' '.join(terms(text+' '+name))))
             if inserted and self.fts:
                 row=self.db.execute('SELECT id FROM messages WHERE group_id=? AND message_id=?',(group,mid)).fetchone()
                 self.db.execute('INSERT INTO message_search(rowid,group_id,terms) VALUES (?,?,?)',(row['id'],group,' '.join(terms(text+' '+name))))

@@ -31,3 +31,22 @@ class ParticipantTests(unittest.TestCase):
         with self.db:participants.apply_judgments(self.db,{'speakers':[{'id':'8','kind':'human','confidence':1},{'id':'9','kind':'human','confidence':0.5},{'id':'123','kind':'human','confidence':1}]},[{'user_id':'8'},{'user_id':'9'}],self.cfg,1001)
         self.assertFalse(participants.humans_recent(self.db,'1',self.cfg,1001))
         self.assertFalse(self.db.execute("SELECT 1 FROM speaker_profiles WHERE user_id='123'").fetchone())
+    def test_full_context_can_correct_a_silent_bot(self):
+        self.observe(9,1000)
+        with self.db:
+            participants.apply_judgments(self.db,{'speakers':[{'id':'9','kind':'human','confidence':.86,'reason':'口语自然'}]},[{'user_id':'9'}],self.cfg,1001)
+            participants.apply_judgments(self.db,{'speakers':[{'id':'9','kind':'bot','confidence':.97,'reason':'群友明确讨论该账号触发规则及清理上下文'}]},[{'user_id':'7'}],self.cfg,1002,{'9'})
+        self.assertEqual(self.db.execute("SELECT kind FROM speaker_profiles WHERE user_id='9'").fetchone()[0],'bot')
+        self.assertFalse(participants.humans_recent(self.db,'1',self.cfg,1002))
+        self.assertEqual(self.db.execute("SELECT count(*) FROM speaker_judgments WHERE user_id='9'").fetchone()[0],3)
+    def test_fluent_speech_cannot_flip_established_bot_back_to_human(self):
+        self.observe(9,1000)
+        with self.db:
+            participants.apply_judgments(self.db,{'speakers':[{'id':'9','kind':'bot','confidence':.97}]},[{'user_id':'9'}],self.cfg,1001)
+            participants.apply_judgments(self.db,{'speakers':[{'id':'9','kind':'human','confidence':.86,'reason':'自然聊天'}]},[{'user_id':'9'}],self.cfg,1002)
+        self.assertEqual(self.db.execute("SELECT kind FROM speaker_profiles WHERE user_id='9'").fetchone()[0],'bot')
+    def test_source_is_exposed_in_evidence(self):
+        self.observe(9,1000);self.observe(7,1000)
+        evidence={v['id']:v for v in participants.evidence(self.db,[{'user_id':'9'},{'user_id':'7'}])}
+        self.assertEqual(evidence['9']['current_judgment']['source'],'initial')
+        self.assertEqual(evidence['7']['current_judgment']['source'],'config')

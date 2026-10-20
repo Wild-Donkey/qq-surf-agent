@@ -162,6 +162,7 @@ def ingest(db, event, cfg, now=None):
         return 'ignored'
     archive.record_event(cfg,event,now)
     if str(event.get('user_id', '')) == str(cfg['bot_id']):
+        with db:participants.observe(db,event,cfg,normalize(event)[0],now)
         return 'self'
     message_id = event.get('message_id')
     if message_id is None or now - float(event.get('time', now)) > cfg.get('max_event_age_seconds', 300):
@@ -433,6 +434,8 @@ def main():
             def stopped(*_): stop.set()
             signal.signal(signal.SIGTERM,stopped); signal.signal(signal.SIGINT,stopped)
             thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+            participants.reconcile_archive(db,cfg)
+            participants.sync_config(db,cfg)
             # Migration: existing cached messages still count toward human presence.
             for prior in db.execute('SELECT e.*,j.user_id FROM events e JOIN social_jobs j ON j.event_key=e.group_id||":"||e.message_id AND j.target_group=e.group_id WHERE e.created>?',(time.time()-300,)).fetchall():
                 with db:participants.observe(db,{'group_id':prior['group_id'],'message_id':prior['message_id'],'user_id':prior['user_id'],'time':prior['created']},cfg,prior['text'],time.time())
