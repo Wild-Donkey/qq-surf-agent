@@ -315,7 +315,7 @@ def dispatch(db, cfg, api_cfg, now=None):
                 alerts.record(db,'refresh_before_send_failed','发送前刷新群消息失败，暂不发旧草稿。',details={'stage':'get_group_msg_history','error':type(exc).__name__,'retcode':getattr(exc,'retcode',None)})
                 continue
         # Only a frozen continuous-traffic window may ignore newer arrivals.
-        if job['kind']!='moment_forward' and not job['deadline_reply'] and newer_context(db,target,job['context_watermark']):
+        if job['kind']!='moment_forward' and not social.request_queue.is_bound(db,job['id']) and not job['deadline_reply'] and newer_context(db,target,job['context_watermark']):
             with db:db.execute("UPDATE deliveries SET status='superseded',updated=? WHERE id=?",(now,job['id']))
             continue
         paused=db.execute('SELECT until_time FROM operator_pause WHERE group_id=?',(target,)).fetchone()
@@ -355,7 +355,7 @@ def dispatch(db, cfg, api_cfg, now=None):
         if cfg.get('send_images', True):
             parts.extend({'type':'image','data':{'file':image['url']}} for image in json.loads(job['images']))
         try:
-            if job['kind']!='moment_forward' and not job['deadline_reply'] and newer_context(db,target,job['context_watermark']):
+            if job['kind']!='moment_forward' and not social.request_queue.is_bound(db,job['id']) and not job['deadline_reply'] and newer_context(db,target,job['context_watermark']):
                 with db:db.execute("UPDATE deliveries SET status='superseded',updated=? WHERE id=?",(time.time(),job['id']))
                 continue
             if not participants.humans_recent(db,target,cfg):

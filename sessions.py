@@ -68,7 +68,7 @@ class SessionPool:
     def flush_active(self,memory):
         for session in self.groups.values():
             memory.flush_session(session.group_id,session.turns)
-            session.cached_memory.clear()
+            # Checkpointing is a copy; active context remains until idle expiry.
 
     def expire(self,memory,cfg,now=None):
         now=time.time() if now is None else now
