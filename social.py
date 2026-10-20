@@ -243,6 +243,13 @@ def pending_batch(db,job,interaction,now):
 
 def apply_decision(db,job,decision,candidates,cfg,now):
     target=job['target_group']
+    if decision['action']=='reply':
+        original=decision.get('emoticon')
+        selection=emoticons.safe_selection(cfg.get('context_dir',ROOT/'context'),target,original)
+        decision['emoticon']=selection
+        if original and not selection:decision['_emoticon_dropped']=True
+        if not decision.get('text','').strip() and not selection:
+            decision.update(action='wait',reason='没有可发送的文字或有效表情')
     if decision['action']=='wait':return
     if decision['action']=='merged_forward':
         merged_forward.approve(db,cfg,target,decision,now);return

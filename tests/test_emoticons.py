@@ -32,3 +32,20 @@ class EmoticonTests(unittest.TestCase):
    self.assertEqual(workflow.ingest(db,event,cfg,101),'duplicate_event')
    import participants
    self.assertTrue(participants.humans_recent(db,'1',cfg,101));db.close()
+
+ def test_invalid_optional_emoticon_preserves_text_reply(self):
+  with tempfile.TemporaryDirectory() as root:
+   db=workflow.connect(':memory:');decision={'action':'reply','text':'正常文字','emoticon':'😂'}
+   social.apply_decision(db,{'target_group':'1','event_key':'1:invalid'},decision,{}, {'context_dir':root},1)
+   row=db.execute('SELECT text,emoticon FROM candidates').fetchone()
+   self.assertEqual(row['text'],'正常文字');self.assertIsNone(row['emoticon']);self.assertTrue(decision['_emoticon_dropped']);db.close()
+ def test_invalid_emoticon_only_reply_becomes_wait_without_requeue(self):
+  with tempfile.TemporaryDirectory() as root:
+   db=workflow.connect(':memory:');decision={'action':'reply','text':'','emoticon':{'kind':'sticker','id':'nonexistent'}}
+   social.apply_decision(db,{'target_group':'1','event_key':'1:invalid'},decision,{}, {'context_dir':root},1)
+   self.assertEqual(decision['action'],'wait');self.assertEqual(db.execute('SELECT count(*) FROM candidates').fetchone()[0],0);db.close()
+ def test_safe_normalization_does_not_accept_arbitrary_assets(self):
+  with tempfile.TemporaryDirectory() as root:
+   identity=next(iter(emoticons.FACES))
+   for value in (identity,int(identity),{'type':'face','id':identity}):self.assertEqual(emoticons.safe_selection(root,'1',value),{'kind':'face','id':identity})
+   for value in ('file:///secret',True,[],{'kind':'face','id':'999999'},{'kind':'image','id':'https://example.com'}, {'kind':'face','id':True}):self.assertIsNone(emoticons.safe_selection(root,'1',value))

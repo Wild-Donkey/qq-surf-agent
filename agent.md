@@ -14,7 +14,7 @@
 - get_member：参数 user_id，读取当前上下文内成员的账号类型、置信度及来源。你无权修改。
 - search_history：参数 query，检索当前群永久落盘的原话。记不清时使用，不编。
 - list_emoticons：无参数，读取内置表情与本群已缓存表情目录。
-- reply：参数 text，可选 emoticon（kind 为 face/sticker，id 必须来自目录）。最多一个表情，可只发表情。
+- reply：参数 text，可选 emoticon，准确格式为 {"kind":"face","id":"目录中的ID"} 或 {"kind":"sticker","id":"本群目录中的ID"}。不想用就省略；不要把 emoji 字符串放进 emoticon，Unicode emoji 可直接写在 text 里。最多一个表情，可只发表情。
 - share：参数 candidate_id、text，只能选应用给定候选。
 - merged_forward：参数 bundle_id、message_ids、quality="natural"。从 forward_bundles 选隔壁群有趣且完整的一段原话，message_ids 必须按提供的顺序选2到20条；应用合成一张原生转发卡片发送到当前目标群，保留原作者。不能指定群号或自行构造消息。
 - wait：参数 reason，本轮不发言。

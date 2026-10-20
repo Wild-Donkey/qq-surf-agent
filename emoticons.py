@@ -45,3 +45,23 @@ def segments(root,group,selection):
  if not path.is_file():raise ValueError('sticker_cache_missing')
  import base64
  return [{'type':'image','data':{'file':'base64://'+base64.b64encode(path.read_bytes()).decode()}}]
+
+def safe_selection(root,group,selection):
+ """Optional decoration must never invalidate an otherwise usable text reply."""
+ if selection is None or selection=='':return None
+ if isinstance(selection,bool):return None
+ if isinstance(selection,(str,int)):
+  identity=str(selection)
+  if identity not in FACES:
+   matches=[key for key,name in FACES.items() if name==identity]
+   if len(matches)!=1:return None
+   identity=matches[0]
+  selection={'kind':'face','id':identity}
+ elif isinstance(selection,dict):
+  selection={'kind':selection.get('kind',selection.get('type')),'id':selection.get('id')}
+ else:return None
+ if selection.get('kind') not in ('face','sticker') or isinstance(selection.get('id'),bool) or not isinstance(selection.get('id'),(str,int)):return None
+ selection={'kind':selection['kind'],'id':str(selection['id'])}
+ try:segments(root,group,selection)
+ except (ValueError,OSError):return None
+ return selection
