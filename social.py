@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import time
 import urllib.error
@@ -107,12 +108,16 @@ def apply_decision(db,job,decision,candidates,cfg,now):
             raise ValueError('目标不在候选路由内')
         with db:
             db.execute("UPDATE candidates SET status='approved' WHERE id=?",(cid,))
-            db.execute("UPDATE deliveries SET status='approved' WHERE candidate_id=? AND target_group=? AND status='pending'",(cid,target))
+            urls=re.findall(r'https?://[^\s]+',row['text'])[:2]
+            caption=decision['text'].strip()
+            if '[联系方式已略]' in excerpt(caption,1000):raise ValueError('分享文案包含联系方式')
+            caption=caption+('\n'+'\n'.join(urls) if urls else '')
+            db.execute("UPDATE deliveries SET status='approved',caption=? WHERE candidate_id=? AND target_group=? AND status='pending'",(caption or None,cid,target))
         return
     # Replies are strictly pinned to the group where this decision is being made.
     text=decision['text'].strip()
     if not text or '[联系方式已略]' in excerpt(text,1000):raise ValueError('回复包含需要略去的内容')
-    fp=hashlib.sha256(('reply:'+target+':'+text).encode()).hexdigest()
+    fp=hashlib.sha256(('reply:'+target+':'+job['event_key']+':'+text).encode()).hexdigest()
     with db:
         db.execute("INSERT OR IGNORE INTO candidates(fingerprint,source_group,text,images,created,status,kind) VALUES (?,?,?,?,?,?,?)",
                    (fp,target,text,'[]',now,'approved','reply'))

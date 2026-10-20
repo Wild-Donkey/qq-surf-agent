@@ -49,6 +49,8 @@ def connect(path):
     ''')
     if 'kind' not in {r[1] for r in db.execute('PRAGMA table_info(candidates)')}:
         db.execute("ALTER TABLE candidates ADD COLUMN kind TEXT DEFAULT 'share'")
+    if 'caption' not in {r[1] for r in db.execute('PRAGMA table_info(deliveries)')}:
+        db.execute('ALTER TABLE deliveries ADD COLUMN caption TEXT')
     social.ensure_schema(db)
     alerts.ensure_schema(db)
     db.commit()
@@ -213,7 +215,8 @@ def dispatch(db, cfg, api_cfg, now=None):
     groups = configured_groups(cfg)
     jobs = db.execute("""SELECT d.*,c.source_group,c.text,c.images,c.kind FROM deliveries d
         JOIN candidates c ON c.id=d.candidate_id WHERE d.status='approved' AND c.status='approved'
-        AND d.created<=? ORDER BY d.id LIMIT 50""", (now-cfg.get('hold_seconds',120),)).fetchall()
+        AND ((c.kind='reply' AND d.created<=?) OR (c.kind!='reply' AND d.created<=?))
+        ORDER BY d.id LIMIT 50""", (now-cfg.get('reply_delay_seconds',3),now-cfg.get('hold_seconds',120))).fetchall()
     sent = 0
     for job in jobs:
         target = job['target_group']
@@ -236,6 +239,10 @@ def dispatch(db, cfg, api_cfg, now=None):
         global_day = db.execute("SELECT count(*) FROM deliveries WHERE status IN ('sent','uncertain') AND updated>?",(now-86400,)).fetchone()[0]
         last = db.execute("SELECT max(updated) FROM deliveries WHERE target_group=? AND status IN ('sent','uncertain')",(target,)).fetchone()[0]
         cooldown=cfg.get('reply_cooldown_seconds',120) if job['kind']=='reply' else cfg.get('group_cooldown_seconds',3600)
+        if job['kind']!='reply':
+            shares=db.execute("SELECT count(*) FROM deliveries d JOIN candidates c ON c.id=d.candidate_id WHERE d.target_group=? AND c.kind!='reply' AND d.status IN ('sent','uncertain') AND d.updated>?",(target,now-86400)).fetchone()[0]
+            if shares>=cfg.get('max_shares_per_group_day',3):
+                db.rollback();continue
         if day >= cfg.get('max_per_group_day',3) or global_day >= cfg.get('max_total_day',10) or last and now-last < cooldown:
             db.rollback()
             continue
@@ -244,7 +251,7 @@ def dispatch(db, cfg, api_cfg, now=None):
             continue
         db.commit()
         source = groups[job['source_group']]['name']
-        text=job['text'] if job['kind']=='reply' else MARK+source+'\n'+job['text']
+        text=job['text'] if job['kind']=='reply' else MARK+source+'\n'+(job['caption'] or job['text'])
         parts = [{'type':'text','data':{'text':text}}]
         if cfg.get('send_images', True):
             parts.extend({'type':'image','data':{'file':image['url']}} for image in json.loads(job['images']))
