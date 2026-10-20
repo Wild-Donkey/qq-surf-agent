@@ -159,13 +159,28 @@ def update_states(cfg,group,payload,args,db=None):
     allowed={str(p['id']) for p in payload.get('member_profiles',[])}
     members=args.get('members',[]);state=args.get('group_state');images=args.get('images',[])
     available={v['reference']:v for v in payload.get('_attached_images',[])}
-    if not isinstance(images,list) or len(images)>4:raise ValueError('invalid_image_states')
-    for image in images:
-        if not isinstance(image,dict) or not {'reference','description'}<=set(image) or set(image)-{'reference','description','is_sticker','tags'} or image['reference'] not in available:raise ValueError('image_not_attached')
-        if not isinstance(image['description'],str) or len(image['description'])>1200:raise ValueError('invalid_image_description')
-        if 'is_sticker' in image and not isinstance(image['is_sticker'],bool):raise ValueError('invalid_sticker_flag')
+    # Optional image annotations cannot block a valid chat turn. Only annotations
+    # bound to actual attached bytes are eligible for archive/library writes.
+    validated_images=[];rejected=0
+    if not isinstance(images,list):images=[];rejected+=1
+    aliases={v.get('sticker_id'):key for key,v in available.items() if v.get('sticker_id')}
+    for proposed in images[:4]:
+        if not isinstance(proposed,dict):rejected+=1;continue
+        image=dict(proposed);reference=image.get('reference')
+        if not isinstance(reference,str):rejected+=1;continue
+        if reference not in available and reference in aliases:image['reference']=aliases[reference]
+        if not {'reference','description'}<=set(image) or set(image)-{'reference','description','is_sticker','tags'} or image['reference'] not in available:
+            rejected+=1;continue
+        if not isinstance(image['description'],str) or not image['description'].strip() or len(image['description'])>1200:
+            rejected+=1;continue
+        if 'is_sticker' in image and not isinstance(image['is_sticker'],bool):
+            rejected+=1;continue
         tags=image.get('tags',[])
-        if not isinstance(tags,list) or len(tags)>12 or any(not isinstance(tag,str) or not 1<=len(tag)<=40 for tag in tags):raise ValueError('invalid_sticker_tags')
+        if not isinstance(tags,list) or len(tags)>12 or any(not isinstance(tag,str) or not 1<=len(tag)<=40 for tag in tags):
+            rejected+=1;continue
+        validated_images.append(image)
+    images=validated_images
+    if rejected:payload['_rejected_image_annotations']=payload.get('_rejected_image_annotations',0)+rejected
     if not isinstance(members,list) or len(members)>60:raise ValueError('invalid_member_states')
     if state is not None:memory_store.input_patch(state,'StateInput')
     # Validate the entire request before writing any file.

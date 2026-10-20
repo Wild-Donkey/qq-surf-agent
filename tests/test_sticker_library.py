@@ -68,3 +68,10 @@ class StickerLibraryTests(unittest.TestCase):
   first=emoticons.learn(self.root,'1','','动画1',preview,original_key=one)
   second=emoticons.learn(self.root,'1','','动画2',preview,original_key=two)
   self.assertNotEqual(first,second);self.assertEqual(len(emoticons.catalog(self.root,'1')['stickers']),2)
+
+ def test_unattached_image_annotation_cannot_block_or_pollute_state(self):
+  cfg={'context_dir':str(self.root)};payload={}
+  application.update_states(cfg,'1',payload,{'group_state':'有效群状态','images':[{'reference':'invented','description':'未曾看到的图片','is_sticker':True}]})
+  self.assertIn('有效群状态',application.group_state(cfg,'1'))
+  self.assertEqual(payload['_rejected_image_annotations'],1)
+  self.assertEqual(emoticons.catalog(self.root,'1')['stickers'],[])
