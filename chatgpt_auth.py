@@ -188,7 +188,7 @@ def infer(model, instructions, payload):
           'input':[{'role':'user','content':json.dumps(payload,ensure_ascii=False)}], 'store':False,'stream':True}
     req=urllib.request.Request(RESOURCE+'/responses',data=json.dumps(body).encode(),
         headers={'Authorization':'Bearer '+access_token(),'Content-Type':'application/json','Accept':'text/event-stream'})
-    completed=None; event=[]
+    completed=None; event=[];messages={}
     with urllib.request.urlopen(req,timeout=90) as response:
         for raw in response:
             line=raw.decode('utf-8').rstrip('\r\n')
@@ -199,10 +199,16 @@ def infer(model, instructions, payload):
                 item=json.loads(data)
                 if item.get('type') in ('error','response.failed','response.incomplete'):
                     raise ValueError('ChatGPT 流式响应未完成')
+                if item.get('type')=='response.output_item.done':
+                    output=item.get('item',{})
+                    if output.get('type')=='message' and output.get('phase') in (None,'final_answer'):
+                        messages[item.get('output_index',0)]=output
                 if item.get('type')=='response.completed': completed=item['response']
     if not completed or completed.get('status')!='completed':raise ValueError('ChatGPT 连接提前结束')
-    text=''.join(c.get('text','') for item in completed.get('output',[]) if item.get('type')=='message'
+    output=list(messages[k] for k in sorted(messages)) if messages else completed.get('output',[])
+    text=''.join(c.get('text','') for item in output if item.get('type')=='message' and item.get('phase') in (None,'final_answer')
                  for c in item.get('content',[]) if c.get('type')=='output_text')
+    if not text:raise ValueError('ChatGPT 未返回最终正文')
     usage=completed.get('usage',{})
     return text,{'prompt_tokens':usage.get('input_tokens',0),'completion_tokens':usage.get('output_tokens',0),'total_tokens':usage.get('total_tokens',0)}
 

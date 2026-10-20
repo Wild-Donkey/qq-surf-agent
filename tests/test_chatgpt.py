@@ -78,6 +78,16 @@ class ChatGPTTests(unittest.TestCase):
         with patch.object(auth,'available',return_value=True),patch.object(auth,'infer',return_value=('{"action":"wait","text":""}',{})):
             result,_=social.call_model({'enabled':True,'provider':'chatgpt','model':'selected'}, {})
             self.assertEqual(result['action'],'wait')
+    def test_stream_final_items_survive_empty_completed_output(self):
+        import io
+        events=[{'type':'response.output_item.done','output_index':0,'item':{'type':'message','phase':'commentary','content':[{'type':'output_text','text':'Thinking'}]}},
+                {'type':'response.output_item.done','output_index':1,'item':{'type':'message','phase':'final_answer','content':[{'type':'output_text','text':'{"action":"wait"}'}]}},
+                {'type':'response.completed','response':{'status':'completed','output':[]}}]
+        stream=lambda items:io.BytesIO(''.join('data: '+json.dumps(e)+'\n\n' for e in items).encode())
+        with patch.object(auth,'access_token',return_value='secret'),patch.object(auth.urllib.request,'urlopen',return_value=stream(events)):
+            self.assertEqual(auth.infer('selected','rules',{})[0],'{"action":"wait"}')
+        with patch.object(auth,'access_token',return_value='secret'),patch.object(auth.urllib.request,'urlopen',return_value=stream(events[:-1])):
+            with self.assertRaises(ValueError):auth.infer('selected','rules',{})
 
 
 if __name__=='__main__':unittest.main()
