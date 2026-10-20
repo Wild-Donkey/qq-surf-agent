@@ -12,14 +12,16 @@ TOOLS=[
  {'name':'read_context','description':'读取应用准备的当前群上下文，无参数'},
  {'name':'get_member','description':'读取当前上下文内成员画像，参数 user_id'},
  {'name':'search_history','description':'按 query 检索当前群已落盘历史'},
+ {'name':'search_emoticons','description':'按语义描述/标签检索本群已收集表情，参数query，可选include_unreviewed查看尚未理解的图片'},
+ {'name':'view_emoticon','description':'查看本群收集的某张表情，参数id；应用下一次调用附上真实图片'},
  {'name':'list_emoticons','description':'读取本群可用表情目录'},
  {'name':'reply','description':'回复当前群，参数 text 和可选 emoticon'},
  {'name':'share','description':'分享给定 candidate_id，参数 candidate_id,text'},
  {'name':'merged_forward','description':'把隔壁群一段消息合并转发到当前目标群，参数 bundle_id、message_ids（按给定顺序至少2条）、quality=natural'},
  {'name':'forward','description':'转发当前群中某条消息（原生转发卡片），参数 message_id（取自 recent_target_messages）'},
  {'name':'wait','description':'保持安静，参数 reason'}]
-ARGUMENTS={'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id'},'search_history':{'query'},'list_emoticons':set(),'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'merged_forward':{'bundle_id','message_ids','quality'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id','bundle_id','message_ids'}}
-READS={'get_memory_schema','update_states','read_context','get_member','search_history','list_emoticons'}
+ARGUMENTS={'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id'},'search_history':{'query'},'list_emoticons':set(),'search_emoticons':{'query','include_unreviewed'},'view_emoticon':{'id'},'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'merged_forward':{'bundle_id','message_ids','quality'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id','bundle_id','message_ids'}}
+READS={'get_memory_schema','update_states','read_context','get_member','search_history','list_emoticons','search_emoticons','view_emoticon'}
 def decode(raw):
  value=parse_json(raw,'worker_api')
  # Bounded normalization; never let outer fields override explicit arguments.
@@ -72,9 +74,19 @@ def read(db,cfg,target,payload,call):
  if name=='get_memory_schema':return {k:memory_store.SCHEMA['$defs'][k] for k in ('FactInput','RelationInput','StateInput','GroupPortraitInput','PersonPortraitInput')}
  if name=='update_states':
   update_states(cfg,target,payload,args,db)
-  return {'saved':True,'member_memories':member_context(cfg,target,payload),'group_state':group_state(cfg,target)}
+  return {'saved':True,'emoticon_catalog':emoticons.catalog(cfg['context_dir'],target),'member_memories':member_context(cfg,target,payload),'group_state':group_state(cfg,target)}
  if name=='read_context':return {k:v for k,v in payload.items() if k not in ('_vision','_attached_images','tool_results')}
  if name=='list_emoticons':return emoticons.catalog(cfg['context_dir'],target)
+ if name=='search_emoticons':
+  query=args.get('query','');unreviewed=args.get('include_unreviewed',False)
+  if not isinstance(query,str) or len(query)>200 or not isinstance(unreviewed,bool):raise ValueError('invalid_emoticon_query')
+  return {'stickers':emoticons.search(cfg['context_dir'],target,query,include_unreviewed=unreviewed)}
+ if name=='view_emoticon':
+  identity=args.get('id')
+  if not isinstance(identity,str) or not re.fullmatch('[0-9a-f]{24}',identity):raise ValueError('invalid_sticker_id')
+  item=emoticons.preview(cfg['context_dir'],target,identity)
+  payload['_vision']=[item]+[v for v in payload.get('_vision',[]) if v['reference']!=item['reference']][:3]
+  return {'reference':item['reference'],'instruction':'下一次调用附上这张真实图片；用images状态接口描述、标记is_sticker和tags后可选择发送'}
  if name=='get_member':
   user=str(args.get('user_id',''))
   allowed={str(v['id']) for v in payload.get('member_profiles',[])}
@@ -149,8 +161,11 @@ def update_states(cfg,group,payload,args,db=None):
     available={v['reference']:v for v in payload.get('_attached_images',[])}
     if not isinstance(images,list) or len(images)>4:raise ValueError('invalid_image_states')
     for image in images:
-        if not isinstance(image,dict) or set(image)!={'reference','description'} or image['reference'] not in available:raise ValueError('image_not_attached')
+        if not isinstance(image,dict) or not {'reference','description'}<=set(image) or set(image)-{'reference','description','is_sticker','tags'} or image['reference'] not in available:raise ValueError('image_not_attached')
         if not isinstance(image['description'],str) or len(image['description'])>1200:raise ValueError('invalid_image_description')
+        if 'is_sticker' in image and not isinstance(image['is_sticker'],bool):raise ValueError('invalid_sticker_flag')
+        tags=image.get('tags',[])
+        if not isinstance(tags,list) or len(tags)>12 or any(not isinstance(tag,str) or not 1<=len(tag)<=40 for tag in tags):raise ValueError('invalid_sticker_tags')
     if not isinstance(members,list) or len(members)>60:raise ValueError('invalid_member_states')
     if state is not None:memory_store.input_patch(state,'StateInput')
     # Validate the entire request before writing any file.
@@ -185,7 +200,7 @@ def update_states(cfg,group,payload,args,db=None):
     for image in images:
         meta=available[image['reference']]
         if meta.get('event_key'):archive.record_visual(cfg,meta['event_key'],image['description'],meta.get('media_key',''))
-        if meta.get('media_key'):emoticons.learn(cfg['context_dir'],meta['group_id'],meta['url'],image['description'],meta['media_key'])
+        if meta.get('media_key'):emoticons.learn(cfg['context_dir'],meta['group_id'],meta.get('url',''),image['description'],meta['media_key'],original_key=meta.get('original_key'),tags=image.get('tags',[]),is_sticker=image.get('is_sticker',bool(meta.get('sticker_hint'))))
     if memory_store.enabled(cfg['context_dir']) or isinstance(state,dict) or any(isinstance(item['state'],dict) for item in members):
         store=memory_store.MemoryStore(cfg['context_dir'])
         try:store.state_updates(group,state,[(str(item['user_id']),item['state'],item.get('scope','person')) for item in members])

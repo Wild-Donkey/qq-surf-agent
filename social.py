@@ -29,7 +29,7 @@ SYSTEM='''你是一个已公开说明是 AI bot 的普通群友，喜欢搬屎�
 遇到他人明确拒绝互动、明显不合适、刚回应过同一段话或只有完全看不懂的图片时可以 wait。不能仅以没@你、没点名、无新话题或无知识增量为理由沉默。不冒充真实成员，不捏造亲身经历。
 应用管理上下文加载、存储、账号类型、触发和发信资格。你负责理解群聊并通过状态接口更新群和成员状态，不自己管理文件、flush和调度。
 你只调用应用接口。输出必须是合法 JSON，且只能是 {"call":{"name":"<接口名>","arguments":{...}}} 这一种格式。绝对禁止直接输出 {"action":...}、{"text":...}、{"type":...} 或纯文本；所有决策都必须包在 call 里。常用 finish_turn：{"call":{"name":"finish_turn","arguments":{"action":"reply","text":"简短回复","quality":"natural"}}}。
-可调用 read_context、get_member、search_history、list_emoticons 读取，update_states 写入状态；通常调用 finish_turn 同时提交 group_state、members 和 action（wait/reply/share/forward/merged_forward）完成本轮。成员状态保留有根据的称呼、关系、话题、偏好、尚未解决的事情及不想被打扰的意愿，不把玩笑当事实。当前目标群由应用固定，不能指定群号或收件人。合并转发只从 forward_bundles 选择 bundle_id 和原序 message_ids（至少2条），quality=natural；复读接龙、抽象互动可以自发搬到当前目标群，不必等指令，没意思就wait。一次只调用一个接口。'''
+可调用 read_context、get_member、search_history、list_emoticons、search_emoticons、view_emoticon 读取，update_states 写入状态；通常调用 finish_turn 同时提交 group_state、members 和 action（wait/reply/share/forward/merged_forward）完成本轮。成员状态保留有根据的称呼、关系、话题、偏好、尚未解决的事情及不想被打扰的意愿，不把玩笑当事实。当前目标群由应用固定，不能指定群号或收件人。合并转发只从 forward_bundles 选择 bundle_id 和原序 message_ids（至少2条），quality=natural；复读接龙、抽象互动可以自发搬到当前目标群，不必等指令，没意思就wait。小表情和大表情都可以自然使用，Unicode emoji写text，QQ小表情用face，本群收集的大表情用sticker。看见有趣表情包时通过images写description、is_sticker=true、tags；普通截图is_sticker=false。用search_emoticons按情绪/语境找，没看懂的先view_emoticon看原图再决定，动图仅理解首帧但发送保留原动图。一次只调用一个接口。'''
 
 
 def ensure_schema(db):
@@ -79,9 +79,9 @@ def enqueue(db,event,cfg,now=None):
                    (source+':'+str(event['message_id']),target,source,user,now,'pending',None,None))
         parts=event.get('message') if isinstance(event.get('message'),list) else []
         text=('\n'.join(str(p.get('data',{}).get('text','')) for p in parts if isinstance(p,dict) and p.get('type')=='text')+'\n'+emoticons.describe(parts)).strip()[:6000]
-        images=sum(isinstance(p,dict) and p.get('type')=='image' for p in parts)
+        images=sum(isinstance(p,dict) and p.get('type') in ('image','mface') for p in parts)
         db.execute('UPDATE social_jobs SET trigger_text=?,trigger_images=? WHERE event_key=? AND target_group=?',(text,images,source+':'+str(event['message_id']),target))
-        media=[{key:p.get('data',{}).get(key) for key in ('url','file','file_id','path') if p.get('data',{}).get(key)} for p in parts if isinstance(p,dict) and p.get('type')=='image'][:3]
+        media=[{**{key:p.get('data',{}).get(key) for key in ('url','file','file_id','path') if p.get('data',{}).get(key)},'_sticker_hint':p.get('type')=='mface' or str(p.get('data',{}).get('sub_type',''))=='1'} for p in parts if isinstance(p,dict) and p.get('type') in ('image','mface')][:3]
         db.execute('UPDATE social_jobs SET trigger_media=? WHERE event_key=? AND target_group=?',(json.dumps(media),source+':'+str(event['message_id']),target))
         quote=next((str(p.get('data',{}).get('id',''))[:80] for p in parts if isinstance(p,dict) and p.get('type')=='reply'),'')
         mentions=[str(p.get('data',{}).get('qq',''))[:30] for p in parts if isinstance(p,dict) and p.get('type')=='at'][:20]
@@ -126,7 +126,7 @@ def generate_text(model,instructions,payload):
     import vision
     payload,image_inputs=vision.prepare(payload)
     private_vision_status=payload['vision_status']
-    payload=dict(payload);payload['vision_status']={'attached':[{k:v for k,v in item.items() if k in ('reference','animated_first_frame')} for item in private_vision_status['attached']],'unavailable':private_vision_status['unavailable']}
+    payload=dict(payload);payload['vision_status']={'attached':[{k:v for k,v in item.items() if k in ('reference','animated_first_frame','sticker_id','sticker_hint')} for item in private_vision_status['attached']],'unavailable':private_vision_status['unavailable']}
     if model.get('provider')=='chatgpt':
         import chatgpt_auth
         raw,usage=chatgpt_auth.infer(model['model'],instructions,payload,image_inputs or None,**({'text_format':model['_text_format']} if model.get('_text_format') else {}))

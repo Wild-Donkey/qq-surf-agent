@@ -8,6 +8,7 @@ class VisionTests(unittest.TestCase):
     def test_only_qq_image_hosts_allowed(self):
         self.assertTrue(vision.allowed('https://multimedia.nt.qq.com.cn/download?x=1'))
         self.assertTrue(vision.allowed('https://gchat.qpic.cn/a'))
+        self.assertTrue(vision.allowed('https://gxh.vip.qq.com/a'))
         for url in ['http://gchat.qpic.cn/a','https://127.0.0.1/a','https://qpic.cn.evil.example/a','file:///tmp/a','https://gchat.qpic.cn:8443/a']:
             self.assertFalse(vision.allowed(url))
     def test_images_are_real_inputs_and_urls_are_not_in_text_payload(self):

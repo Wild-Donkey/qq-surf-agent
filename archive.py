@@ -45,7 +45,7 @@ class Archive:
         text='\n'.join(str(p.get('data',{}).get('text','')) for p in parts if isinstance(p,dict) and p.get('type')=='text')
         labels=emoticons.describe(parts)
         if labels:text+='\n'+labels
-        images=[p.get('data',{}) for p in parts if isinstance(p,dict) and p.get('type')=='image']
+        images=[p.get('data',{}) for p in parts if isinstance(p,dict) and p.get('type') in ('image','mface')]
         quote=next((str(p.get('data',{}).get('id','')) for p in parts if isinstance(p,dict) and p.get('type')=='reply'),'')
         mentions=[str(p.get('data',{}).get('qq','')) for p in parts if isinstance(p,dict) and p.get('type')=='at']
         sender=event.get('sender') if isinstance(event.get('sender'),dict) else {}

@@ -97,7 +97,7 @@ def normalize(event):
             continue
         if part.get('type') == 'text':
             text.append(str(data.get('text', '')))
-        elif part.get('type') == 'image':
+        elif part.get('type') in ('image','mface'):
             url = str(data.get('url', ''))
             if urlsplit(url).scheme == 'https':
                 # Never accept arbitrary local files or CQ instructions from source messages.
@@ -382,6 +382,8 @@ def dispatch(db, cfg, api_cfg, now=None):
                 memory=MarkdownMemory(cfg.get('context_dir',ROOT/'context'))
                 try:memory.add_note('group',target,'自己最近发言：'+text)
                 finally:memory.close()
+            if job['emoticon']:
+                emoticons.mark_used(cfg['context_dir'],target,json.loads(job['emoticon']))
             sent += 1
         except Exception as exc:
             with db:
