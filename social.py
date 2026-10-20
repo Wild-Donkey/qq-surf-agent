@@ -32,7 +32,7 @@ pending_requests 是尚未处理的明确请求，优先级高于普通聊天，
 遇到他人明确拒绝互动、明显不合适、刚回应过同一段话或只有完全看不懂的图片时可以 wait。不能仅以没@你、没点名、无新话题或无知识增量为理由沉默。不冒充真实成员，不捏造亲身经历。
 应用管理上下文加载、存储、账号类型、触发和发信资格。你负责理解群聊并通过状态接口更新群和成员状态，不自己管理文件、flush和调度。
 自我介绍时公开AI身份、当前实际模型，并附bot_identity.repository_url中的源码链接；普通聊天不反复贴链接。你只调用应用接口。输出必须是合法 JSON，且只能是 {"call":{"name":"<接口名>","arguments":{...}}} 这一种格式。绝对禁止直接输出 {"action":...}、{"text":...}、{"type":...} 或纯文本；所有决策都必须包在 call 里。常用 finish_turn：{"call":{"name":"finish_turn","arguments":{"action":"reply","text":"简短回复","quality":"natural"}}}。
-可调用 read_context、get_member、search_history、list_emoticons、search_emoticons、view_emoticon 读取，update_states 写入状态；通常调用 finish_turn 同时提交 group_state、members 和 action（wait/reply/share/forward/merged_forward）完成本轮。成员状态保留有根据的称呼、关系、话题、偏好、尚未解决的事情及不想被打扰的意愿，不把玩笑当事实。不能指定任意群号或收件人。当前对话与普通回复只属于本群，不能隔空回复别的群；跨群只允许明确的合并转发。对图正常评论后再独立判断分享价值，不要什么都发；有明确笑点/离谱点且目标群趣味契合时才分享。finish_turn可在本群reply或wait之外带image_share={image_id,route_id,quality:"natural",reason:"有意思在哪、为什么适合该群"}，应用先发本群评论再发图；最多一个去处。也可直接share_image发送图片，image_id取outgoing_images或实际附图sticker_id，route_id取image_destinations；不解释梗、不把别群话当目标群发言。连续对话才合并转发。本群特别有节目时，主动从outgoing_moments选完整片段，并带destination.route_id合并转发到给定活跃群，不必等群友指挥；普通聊天不搬、不掐头去尾。其余合并转发只从 forward_bundles 选择 bundle_id 和原序 message_ids（至少2条），quality=natural；复读接龙、抽象互动可以自发搬到当前目标群，不必等指令，没意思就wait。小表情和大表情都可以自然使用，Unicode emoji写text，QQ小表情用face，本群收集的大表情用sticker。看见有趣表情包时通过images写description、is_sticker=true、tags；普通截图is_sticker=false。用search_emoticons按情绪/语境找，没看懂的先view_emoticon看原图再决定，动图仅理解首帧但发送保留原动图。一次只调用一个接口。'''
+可调用 read_context、get_member、search_history、list_emoticons、search_emoticons、view_emoticon 读取，update_states 写入状态；通常调用 finish_turn 同时提交 group_state、members 和 action（wait/reply/share/forward/merged_forward）完成本轮。成员状态保留有根据的称呼、关系、话题、偏好、尚未解决的事情及不想被打扰的意愿，不把玩笑当事实。不能指定任意群号或收件人。当前对话与普通回复只属于本群，不能隔空回复别的群；跨群只允许明确的合并转发。对图正常评论后再独立判断分享价值，不要什么都发；有明确笑点/离谱点且目标群趣味契合时才分享。finish_turn可在本群reply或wait之外带image_share={image_id,route_id,quality:"natural",reason:"有意思在哪、为什么适合该群"}，应用先发本群评论再发图；最多一个去处。也可直接share_image发送图片，image_id取outgoing_images或实际附图sticker_id，route_id取image_destinations；不解释梗、不把别群话当目标群发言。连续对话才合并转发。本群特别有节目时，主动从outgoing_moments选完整片段，并带destination.route_id合并转发到给定活跃群，不必等群友指挥；普通聊天不搬、不掐头去尾。其余合并转发只从 forward_bundles 选择 bundle_id 和原序 message_ids（至少2条），quality=natural；复读接龙、抽象互动可以自发搬到当前目标群，不必等指令，没意思就wait。收藏表情是独立回复方式，不只是文字附属：一张图能完整表达反应就reply text=""、emoticon={kind:"sticker",id:"目录ID"}、quality="natural"，不要再配多余话。优先从按当前语境推荐的旧收藏中选，不要收到谁的图就原样复读，不强行每次用图。小表情和大表情都可以自然使用，Unicode emoji写text，QQ小表情用face，本群收集的大表情用sticker。看见有趣表情包时通过images写description、is_sticker=true、tags；普通截图is_sticker=false。用search_emoticons按情绪/语境找，没看懂的先view_emoticon看原图再决定，动图仅理解首帧但发送保留原动图。一次只调用一个接口。'''
 
 
 def ensure_schema(db):
@@ -211,7 +211,7 @@ def choose(db,cfg,memory,job,task=None):
     user=job['user_id'] if source==target else None
     recalled=task.session.recall(memory,user) if task else memory.retrieve(target,user,6000)
     query=job['trigger_text']+' '+' '.join(view['text'] for view in recent_views[:4])
-    payload={'bot_identity':{'name':'Luna','repository_url':bot_identity.REPOSITORY_URL,'model':load_model(cfg).get('model','未知模型')},'memory_contract':{'version':1,'state_fields':['summary','current_topics','open_threads','decisions','boundaries'],'fact_fields':['text','evidence','confidence'],'read_schema_api':'get_memory_schema','write_semantics':'省略字段保留，空数组清空；应用校验并补齐来源和时间'},'group_portrait':application.group_portrait(cfg,target),'emoticon_catalog':emoticons.catalog(memory.root,target),'memory':recalled,
+    payload={'bot_identity':{'name':'Luna','repository_url':bot_identity.REPOSITORY_URL,'model':load_model(cfg).get('model','未知模型')},'memory_contract':{'version':1,'state_fields':['summary','current_topics','open_threads','decisions','boundaries'],'fact_fields':['text','evidence','confidence'],'read_schema_api':'get_memory_schema','write_semantics':'省略字段保留，空数组清空；应用校验并补齐来源和时间'},'group_portrait':application.group_portrait(cfg,target),'emoticon_catalog':emoticons.catalog(memory.root,target,query),'memory':recalled,
              'recent_visual_observations':[r[0] for r in memory.db.execute("SELECT note FROM notes WHERE scope='group' AND scope_id=? AND note LIKE '图片观察%' AND created>? ORDER BY created DESC LIMIT 4",(str(target),time.time()-1800))],
              'context_watermark':max((r['created'] for r in recent if not r['message_id'].startswith('bot:')),default=0),
              'current_message':{'text':excerpt(job['trigger_text'],6000),'images':job['trigger_images'],'source':'本群' if source==target else '隔壁群'},
@@ -259,6 +259,9 @@ def apply_decision(db,job,decision,candidates,cfg,now):
     if decision['action']=='reply':
         original=decision.get('emoticon')
         selection=emoticons.safe_selection(cfg.get('context_dir',ROOT/'context'),target,original)
+        if selection and selection['kind']=='sticker' and emoticons.recent_echo(cfg.get('context_dir',ROOT/'context'),target,selection['id']):
+            explicit=bool(re.search(r'(?:发|用|来)(?:一下|个|张|这张|这个|刚才的).{0,6}(?:表情|图)',job['trigger_text'] if 'trigger_text' in job.keys() else ''))
+            if not explicit:selection=None;decision['_recent_sticker_echo_blocked']=True
         decision['emoticon']=selection
         if original and not selection:decision['_emoticon_dropped']=True
         if not decision.get('text','').strip() and not selection:
@@ -397,7 +400,7 @@ def tick(db,cfg,sessions=None):
                     metadata=media if isinstance(media,dict) else {'url':media}
                     url=metadata.get('url','')
                     reference=f'message_{index+1}_image_{number+1}';references.append(reference)
-                    payload['_vision'].append({'reference':reference,'url':url,'cache_root':str(memory.root),'event_key':item['event_key'],'group_id':item['source_group'],'metadata':metadata,'ordinal':number})
+                    payload['_vision'].append({'reference':reference,'url':url,'cache_root':str(memory.root),'event_key':item['event_key'],'group_id':item['source_group'],'metadata':metadata,'ordinal':number,'received_at':item['created']})
                 payload['unread_messages'][index]['image_references']=references
             payload['window']={'forced_after_max_wait':bool(window['forced']),'cutoff':window['cutoff'],'instruction':'只判断当前窗口；新到消息由下一窗口处理。难接、没把握或回复尬就wait，不要求一定发言。'}
             payload['batch_instruction']='按时间顺序读完全部 unread_messages；它们可能是积压。以 recent_target_messages 的最新群聊状态接话，不要逐句补回过时的话。'

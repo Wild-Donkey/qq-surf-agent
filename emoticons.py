@@ -20,8 +20,9 @@ def connect(root):
  db.execute('CREATE TABLE IF NOT EXISTS stickers(id TEXT PRIMARY KEY,group_id TEXT,url TEXT,description TEXT,media_key TEXT,updated REAL)')
  db.execute('BEGIN IMMEDIATE')
  columns={r[1] for r in db.execute('PRAGMA table_info(stickers)')}
- for name,definition in [('original_key','TEXT'),('tags',"TEXT DEFAULT '[]'"),('is_sticker','INTEGER DEFAULT 1'),('reviewed','INTEGER DEFAULT 1'),('uses','INTEGER DEFAULT 0'),('last_used','REAL DEFAULT 0'),('animated','INTEGER DEFAULT 0')]:
+ for name,definition in [('original_key','TEXT'),('tags',"TEXT DEFAULT '[]'"),('is_sticker','INTEGER DEFAULT 1'),('reviewed','INTEGER DEFAULT 1'),('uses','INTEGER DEFAULT 0'),('last_used','REAL DEFAULT 0'),('animated','INTEGER DEFAULT 0'),('last_received','REAL DEFAULT 0')]:
   if name not in columns:db.execute('ALTER TABLE stickers ADD COLUMN '+name+' '+definition)
+ db.execute('CREATE TABLE IF NOT EXISTS sticker_observations(group_id TEXT,event_key TEXT,sticker_id TEXT,observed_at REAL,PRIMARY KEY(group_id,event_key,sticker_id))')
  db.commit()
  return db
 def learn(root,group,url,description,media_key,original_key=None,tags=None,is_sticker=True):
@@ -59,6 +60,10 @@ def observe_asset(root,group,meta):
   else:
    db.execute('INSERT INTO stickers(id,group_id,url,description,media_key,updated,original_key,tags,is_sticker,reviewed,animated) VALUES (?,?,?,?,?,?,?,?,?,0,?)',
     (identity,str(group),'','尚未理解的已收集图片',key,time.time(),meta.get('original_key') or key,'[]',int(meta.get('sticker_hint',False)),int(meta.get('animated_first_frame',False))))
+  if meta.get('event_key'):
+   stamp=float(meta.get('received_at') or time.time())
+   added=db.execute('INSERT OR IGNORE INTO sticker_observations VALUES (?,?,?,?)',(str(group),meta['event_key'],identity,stamp)).rowcount
+   if added:db.execute('UPDATE stickers SET last_received=max(last_received,?) WHERE id=?',(stamp,identity))
  db.close()
  return identity
 
@@ -80,8 +85,32 @@ def search(root,group,query='',limit=12,include_unreviewed=False):
  ranked.sort(key=lambda r:(r[0],r[1]),reverse=True)
  return [r[2] for r in ranked[:limit]]
 
-def catalog(root,group):
- return {'faces':FACES,'stickers':search(root,group,limit=20),'search_api':'search_emoticons','preview_api':'view_emoticon'}
+def recent_echo(root,group,identity,now=None):
+ now=time.time() if now is None else now;db=connect(root)
+ row=db.execute('SELECT last_received,last_used FROM stickers WHERE id=? AND group_id=?',(str(identity),str(group))).fetchone();db.close()
+ return bool(row and (row['last_received'] and now-row['last_received']<60 or row['last_used'] and now-row['last_used']<90))
+
+def reactions(root,group,query='',limit=12):
+ now=time.time();db=connect(root)
+ rows=db.execute('SELECT * FROM stickers WHERE group_id=? AND reviewed=1 AND is_sticker=1',(str(group),)).fetchall();db.close()
+ cues=[]
+ for words,tags in [(('哈哈','笑死','乐'),['好笑','开心','笑']), (('?','？','啥'),['疑惑','问号','震惊']), (('无语','离谱','蚌'),['无语','嫌弃','离谱']), (('好耶','牛','厉害'),['赞','开心','庆祝'])]:
+  if any(word in query for word in words):cues.extend(tags)
+ terms=set(re.findall(r'[a-z0-9_]+|[\u4e00-\u9fff]',query.lower()))
+ ranked=[]
+ for row in rows:
+  if row['last_received'] and now-row['last_received']<60 or row['last_used'] and now-row['last_used']<90:continue
+  try:asset_path(root,row['original_key'] or row['media_key'])
+  except ValueError:continue
+  tags=json.loads(row['tags'] or '[]');text=row['description']+' '+' '.join(tags)
+  score=sum(t in text.lower() for t in terms)+3*sum(tag in text for tag in cues)
+  item={'id':row['id'],'description':row['description'],'tags':tags,'animated':bool(row['animated']),'uses':row['uses'],'standalone_reply':True}
+  ranked.append((score,-min(row['uses'],10),-row['last_used'],-row['updated'],item))
+ ranked.sort(key=lambda r:r[:4],reverse=True)
+ return [r[4] for r in ranked[:limit]]
+
+def catalog(root,group,query=''):
+ return {'faces':FACES,'stickers':reactions(root,group,query,20),'standalone_reply_example':{'action':'reply','text':'','emoticon':{'kind':'sticker','id':'从目录选择'},'quality':'natural'},'search_api':'search_emoticons','preview_api':'view_emoticon'}
 
 def preview(root,group,identity):
  db=connect(root);row=db.execute('SELECT * FROM stickers WHERE id=? AND group_id=?',(identity,str(group))).fetchone();db.close()

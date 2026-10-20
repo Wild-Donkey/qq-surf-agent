@@ -14,7 +14,7 @@ class EmoticonTests(unittest.TestCase):
    with patch('vision.fetch',return_value=(b'jpeg-data',False)):
     clean,_=vision.prepare({'_vision':[{'reference':'a','url':'https://gchat.qpic.cn/a','cache_root':root,'group_id':'1','event_key':'1:2'}]})
    key=clean['vision_status']['attached'][0]['media_key'];emoticons.learn(root,'1','url','笑哭猫猫',key)
-   item=emoticons.catalog(root,'1')['stickers'][0]
+   item=emoticons.search(root,'1')[0]
    self.assertTrue(emoticons.segments(root,'1',{'kind':'sticker','id':item['id']})[0]['data']['file'].startswith('base64://'))
    with self.assertRaises(ValueError):emoticons.segments(root,'2',{'kind':'sticker','id':item['id']})
  def test_empty_text_face_reply_persists(self):

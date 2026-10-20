@@ -1,5 +1,6 @@
 """Bounded QQ-CDN image decoding for real multimodal model input."""
 import base64
+import time
 from contextvars import ContextVar
 import hashlib
 import io
@@ -71,7 +72,7 @@ def prepare(payload):
                 key=hashlib.sha256(raw).hexdigest()+'.jpg'
                 path=Path(item['cache_root'])/'media'/key;path.parent.mkdir(parents=True,exist_ok=True)
                 if not path.exists():path.write_bytes(raw)
-                detail.update(original_key=item.get('_original_key',key),sticker_hint=bool(item.get('metadata',{}).get('_sticker_hint')),media_key=key,event_key=item.get('event_key'),group_id=item.get('group_id'),url=item.get('url') or ('qq-message:'+item.get('event_key','')+':'+str(item.get('ordinal',0))))
+                detail.update(received_at=item.get('received_at',time.time()),original_key=item.get('_original_key',key),sticker_hint=bool(item.get('metadata',{}).get('_sticker_hint')),media_key=key,event_key=item.get('event_key'),group_id=item.get('group_id'),url=item.get('url') or ('qq-message:'+item.get('event_key','')+':'+str(item.get('ordinal',0))))
             if item.get('cache_root'):
                 import emoticons
                 detail['sticker_id']=emoticons.observe_asset(item['cache_root'],item.get('group_id',''),detail)
