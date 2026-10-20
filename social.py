@@ -74,7 +74,7 @@ def enqueue(db,event,cfg,now=None):
     # A neighboring group's message can trigger a share into another recently active group.
     recent=db.execute('SELECT group_id,max(created) AS latest FROM events WHERE created>? GROUP BY group_id ORDER BY latest DESC',
                       (now-cfg.get('interaction',{}).get('active_group_seconds',1800),)).fetchall()
-    targets.extend(r['group_id'] for r in recent if r['group_id']!=source and r['group_id'] in allowed)
+    targets.extend(r['group_id'] for r in recent if r['group_id']!=source and r['group_id'] in allowed and participants.humans_recent(db,r['group_id'],cfg,now))
     for target in targets[:3]:
         db.execute('INSERT OR IGNORE INTO social_jobs(event_key,target_group,source_group,user_id,created,status,decision,error) VALUES (?,?,?,?,?,?,?,?)',
                    (source+':'+str(event['message_id']),target,source,user,now,'pending',None,None))
@@ -322,6 +322,14 @@ def tick(db,cfg,sessions=None):
             with db:db.execute('INSERT OR REPLACE INTO metrics VALUES (?,?)',('model_state','waiting_for_api_key'))
             return
         now=time.time()
+        # Neighbor copies are optional sharing work. Never spend a model call
+        # deciding to stay silent in a target with no recent non-bot speaker.
+        for row in db.execute("SELECT DISTINCT target_group FROM social_jobs WHERE status='pending' AND source_group!=target_group").fetchall():
+            if not participants.humans_recent(db,row['target_group'],cfg,now):
+                with db:
+                    db.execute("UPDATE social_jobs SET status='inactive_target' WHERE target_group=? AND source_group!=target_group AND status='pending'",(row['target_group'],))
+                    if not db.execute("SELECT 1 FROM social_jobs WHERE target_group=? AND status='pending' LIMIT 1",(row['target_group'],)).fetchone():
+                        db.execute('DELETE FROM reaction_windows WHERE group_id=?',(row['target_group'],))
         retry=db.execute("SELECT value FROM metrics WHERE key='model_retry_after'").fetchone()
         if retry and float(retry[0])>now:return
         # Reserve a call before network I/O. Failures also count against the local daily cap.
@@ -337,7 +345,7 @@ def tick(db,cfg,sessions=None):
           WHERE j.status='pending' AND ((w.group_id IS NOT NULL AND j.created<=w.cutoff)
           OR (w.group_id IS NULL AND (j.created<=? OR NOT EXISTS
           (SELECT 1 FROM social_jobs newer WHERE newer.target_group=j.target_group AND newer.status='pending' AND newer.created>?))))
-          ORDER BY j.created,j.event_key,j.target_group LIMIT 1""",(now-maximum,now-quiet)).fetchone()
+          ORDER BY CASE WHEN j.source_group=j.target_group THEN 0 ELSE 1 END,j.created,j.event_key,j.target_group LIMIT 1""",(now-maximum,now-quiet)).fetchone()
         if not job:return
         window=db.execute('SELECT * FROM reaction_windows WHERE group_id=?',(job['target_group'],)).fetchone()
         if not window:
