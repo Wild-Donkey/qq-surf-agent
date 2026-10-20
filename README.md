@@ -2,7 +2,7 @@
 
 一个有离线记忆的 QQ 群友型 bot：观察消息、按需读取群与成员记忆，决定保持安静、自然接话，或分享隔壁群的新素材。
 
-Python 3.9+，主程序只使用标准库。通过本机 OneBot 11 HTTP 服务接入 QQ；模型通过可替换的 Chat Completions 兼容接口接入。
+Python 3.9+，主程序使用标准库，ChatGPT 登录验证额外使用 PyJWT。通过本机 OneBot 11 HTTP 服务接入 QQ；模型支持 Chat Completions 兼容接口和官方 ChatGPT 订阅授权。
 
 ## 消息流程
 
@@ -77,7 +77,19 @@ macOS 也可以双击 `start.command`。`python3 botctl.py stop` 请求停止守
 
 OpenAI临时配置可使用有访问权限的低价模型。示例保留gpt-5-nano，它已在官方标注Deprecated，实际可用性应以账号和模型列表为准，不会静默换成更贵的模型。OpenAI请求使用max_completion_tokens，不发送temperature。切换兼容服务时把provider设为compatible，填写其base_url、model和密钥。
 
-标准API key按API项目计费，ChatGPT Plus不会直接变成该key的余额。额度不足会暂停30分钟并通知主人，不持续重试。官方另有 [Sign in with ChatGPT](https://developers.openai.com/cookbook/articles/sign-in-with-chatgpt) 的订阅用量接入方式；本仓库当前尚未实现OAuth登录适配，不能把ChatGPT登录凭证直接当普通API key使用。
+标准API key按API项目计费，ChatGPT Plus不会直接变成该key的余额。额度不足会暂停30分钟并通知主人，不持续重试。
+
+支持官方 [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source) 订阅用量接入，实际权限以授权结果为准，与该账号其他订阅使用共享限额：
+
+```bash
+python3 -m pip install --target runtime/deps -r requirements-chatgpt.txt
+python3 chatgpt_auth.py login
+# 在系统浏览器打开 http://127.0.0.1:8768，点击 Continue with ChatGPT 并授权
+python3 chatgpt_auth.py models
+python3 chatgpt_auth.py activate --model <目录中的模型slug>
+```
+
+activate 会先使用无群聊数据的请求验证模型，成功后才切换 llm.local.json。登录支持PKCE、state、nonce、JWKS签名与身份校验、独立账号注册记录、原子0600凭据保存和自动轮换refresh token。重新登录默认使用当前注册；添加另一账号可用 login --new。凭据及旧模型配置只存在被忽略的runtime/chatgpt/。不会读取Codex或浏览器的登录凭据。推理仅调用公共/v1/responses，store=false、stream=true，必须完整收到response.completed才采用结果。登录与激活后应重启旧服务以加载新代码。
 
 模型默认最多60次调用/滚动24小时，失败也计入上限。此上限不是供应商账单的硬预算；输入长度和输出上限用于进一步控制用量。
 

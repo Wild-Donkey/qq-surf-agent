@@ -37,6 +37,9 @@ def load_model(cfg):
 
 
 def api_key(model):
+    if model.get('provider')=='chatgpt':
+        import chatgpt_auth
+        return 'oauth-local' if chatgpt_auth.available() else ''
     key=os.environ.get(model.get('api_key_env','OPENAI_API_KEY')) or model.get('api_key','')
     if not key and model.get('api_key_file'):
         key=Path(model['api_key_file']).expanduser().read_text().strip()
@@ -61,6 +64,10 @@ def enqueue(db,event,cfg,now=None):
 
 def call_model(model,payload):
     if not model.get('enabled') or not api_key(model):raise ValueError('模型密钥尚未配置')
+    if model.get('provider')=='chatgpt':
+        import chatgpt_auth
+        raw,usage=chatgpt_auth.infer(model['model'],SYSTEM,payload)
+        return validate_decision(raw),usage
     body={'model':model['model'],'messages':[{'role':'system','content':SYSTEM},
           {'role':'user','content':json.dumps(payload,ensure_ascii=False)}],
           'response_format':{'type':'json_object'}}
@@ -72,12 +79,16 @@ def call_model(model,payload):
         body['temperature']=0.6
     response=json.loads(agent.request(model['base_url'].rstrip('/')+'/chat/completions',body,api_key(model)))
     raw=response['choices'][0]['message']['content']
+    return validate_decision(raw),response.get('usage',{})
+
+
+def validate_decision(raw):
     decision=json.loads(raw)
     if decision.get('action') not in ('wait','reply','share'):raise ValueError('无效决策')
     if not isinstance(decision.get('text',''),str):raise ValueError('无效文案')
     decision['text']=decision.get('text','')[:180]
     decision['reason']=str(decision.get('reason',''))[:200]
-    return decision,response.get('usage',{})
+    return decision
 
 
 def choose(db,cfg,memory,job,task=None):
@@ -189,7 +200,8 @@ def tick(db,cfg,sessions=None):
                 db.execute("UPDATE model_calls SET status='failed',error=? WHERE id=?",(error,call_id))
                 db.execute('INSERT OR REPLACE INTO metrics VALUES (?,?)',('model_state',error))
                 db.execute('INSERT OR REPLACE INTO metrics VALUES (?,?)',('model_retry_after',str(now+pause)))
-            alerts.record(db,'model_'+error,'模型调用失败，已暂停重试。若提示额度不足，请检查 API 项目余额。')
+            hint='请检查 ChatGPT 授权、订阅限额或连接状态。' if model.get('provider')=='chatgpt' else '若提示额度不足，请检查 API 项目余额。'
+            alerts.record(db,'model_'+error,'模型调用失败，已暂停重试。'+hint)
         with db:
             db.execute('DELETE FROM social_jobs WHERE created<?',(now-48*3600,))
             db.execute('DELETE FROM model_calls WHERE created<?',(now-30*86400,))
