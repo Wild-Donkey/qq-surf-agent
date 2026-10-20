@@ -30,7 +30,7 @@ SYSTEM='''你是一个已公开说明是 AI bot 的普通群友，喜欢搬屎�
 遇到他人明确拒绝互动、明显不合适、刚回应过同一段话或只有完全看不懂的图片时可以 wait。不能仅以没@你、没点名、无新话题或无知识增量为理由沉默。不冒充真实成员，不捏造亲身经历。
 应用管理上下文加载、存储、账号类型、触发和发信资格。你负责理解群聊并通过状态接口更新群和成员状态，不自己管理文件、flush和调度。
 自我介绍时公开AI身份、当前实际模型，并附bot_identity.repository_url中的源码链接；普通聊天不反复贴链接。你只调用应用接口。输出必须是合法 JSON，且只能是 {"call":{"name":"<接口名>","arguments":{...}}} 这一种格式。绝对禁止直接输出 {"action":...}、{"text":...}、{"type":...} 或纯文本；所有决策都必须包在 call 里。常用 finish_turn：{"call":{"name":"finish_turn","arguments":{"action":"reply","text":"简短回复","quality":"natural"}}}。
-可调用 read_context、get_member、search_history、list_emoticons、search_emoticons、view_emoticon 读取，update_states 写入状态；通常调用 finish_turn 同时提交 group_state、members 和 action（wait/reply/share/forward/merged_forward）完成本轮。成员状态保留有根据的称呼、关系、话题、偏好、尚未解决的事情及不想被打扰的意愿，不把玩笑当事实。当前目标群由应用固定，不能指定群号或收件人。合并转发只从 forward_bundles 选择 bundle_id 和原序 message_ids（至少2条），quality=natural；复读接龙、抽象互动可以自发搬到当前目标群，不必等指令，没意思就wait。小表情和大表情都可以自然使用，Unicode emoji写text，QQ小表情用face，本群收集的大表情用sticker。看见有趣表情包时通过images写description、is_sticker=true、tags；普通截图is_sticker=false。用search_emoticons按情绪/语境找，没看懂的先view_emoticon看原图再决定，动图仅理解首帧但发送保留原动图。一次只调用一个接口。'''
+可调用 read_context、get_member、search_history、list_emoticons、search_emoticons、view_emoticon 读取，update_states 写入状态；通常调用 finish_turn 同时提交 group_state、members 和 action（wait/reply/share/forward/merged_forward）完成本轮。成员状态保留有根据的称呼、关系、话题、偏好、尚未解决的事情及不想被打扰的意愿，不把玩笑当事实。不能指定任意群号或收件人。本群特别有节目时，主动从outgoing_moments选完整片段，并带destination.route_id合并转发到给定活跃群，不必等群友指挥；普通聊天不搬、不掐头去尾。其余合并转发只从 forward_bundles 选择 bundle_id 和原序 message_ids（至少2条），quality=natural；复读接龙、抽象互动可以自发搬到当前目标群，不必等指令，没意思就wait。小表情和大表情都可以自然使用，Unicode emoji写text，QQ小表情用face，本群收集的大表情用sticker。看见有趣表情包时通过images写description、is_sticker=true、tags；普通截图is_sticker=false。用search_emoticons按情绪/语境找，没看懂的先view_emoticon看原图再决定，动图仅理解首帧但发送保留原动图。一次只调用一个接口。'''
 
 
 def ensure_schema(db):
@@ -219,7 +219,7 @@ def choose(db,cfg,memory,job,task=None):
              'relevant_older_windows':memory.recall_episodes(target,query),
              'trigger':'本群有新消息' if source==target else '隔壁群有新消息，可考虑分享；当前群不活跃则保持安静',
              'candidates':material,
-             'forward_bundles':merged_forward.available(db,cfg,target)}
+             'forward_bundles':merged_forward.available(db,cfg,target),'outgoing_moments':merged_forward.outgoing(db,cfg,target) if source==target else []}
     previous_error=db.execute('SELECT value FROM metrics WHERE key=?',('state_update_error:'+str(target),)).fetchone()
     if previous_error:payload['memory_contract']['last_rejected_update']=previous_error[0]
     if archive.enabled(cfg):
@@ -255,7 +255,9 @@ def apply_decision(db,job,decision,candidates,cfg,now):
             decision.update(action='wait',reason='没有可发送的文字或有效表情')
     if decision['action']=='wait':return
     if decision['action']=='merged_forward':
-        merged_forward.approve(db,cfg,target,decision,now);return
+        if decision.get('route_id'):merged_forward.approve_outgoing(db,cfg,target,decision,now)
+        else:merged_forward.approve(db,cfg,target,decision,now)
+        return
     if decision['action']=='share':
         cid=decision.get('candidate_id')
         if isinstance(cid,bool) or cid not in candidates:raise ValueError('候选不在本次允许范围')
@@ -431,6 +433,7 @@ def tick(db,cfg,sessions=None):
             decision['_context_watermark']=payload['context_watermark']
             decision['_deadline_reply']=bool(window['forced'])
             decision['_forward_bundles']=payload.get('forward_bundles',[])
+            decision['_outgoing_moments']=payload.get('outgoing_moments',[])
             decision['_forward_message_ids']=[str(v['message_id']) for v in payload['recent_target_messages'] if not str(v['message_id']).startswith('bot:')]
             # Neither speaker judgments nor memory edits from a worker are consumed.
             vision_status=usage.get('_vision_status',{})

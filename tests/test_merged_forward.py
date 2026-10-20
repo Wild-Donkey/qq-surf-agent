@@ -74,3 +74,46 @@ class MergedForwardTests(unittest.TestCase):
   with self.assertRaises(ValueError):mf.send_payload(self.db,self.cfg,'2','1',data,self.now+1000)
   self.cfg['groups'][1]['allow_cross_group_forward']=False
   with self.assertRaises(ValueError):mf.send_payload(self.db,self.cfg,'2','1',data)
+ def outgoing_decision(self):
+  event={'post_type':'message','message_type':'group','group_id':2,'user_id':77,'message_id':20,'time':self.now-2,'message':[{'type':'text','data':{'text':'隔壁在聊天'}}]}
+  workflow.ingest(self.db,event,self.cfg,self.now-2)
+  moments=mf.outgoing(self.db,self.cfg,'1',self.now)
+  self.assertTrue(moments)
+  bundle=moments[0]
+  return {'action':'merged_forward','bundle_id':bundle['bundle_id'],'message_ids':['1','2','3'],'route_id':bundle['destination']['route_id'],'_outgoing_moments':moments}
+ def test_source_worker_can_publish_to_active_neighbor(self):
+  decision=self.outgoing_decision()
+  social.apply_decision(self.db,{'target_group':'1'},decision,{},self.cfg,self.now)
+  row=self.db.execute('SELECT d.target_group,c.kind FROM deliveries d JOIN candidates c ON c.id=d.candidate_id').fetchone()
+  self.assertEqual(tuple(row),('2','moment_forward'))
+  self.cfg['max_shares_per_group_day']=None
+  with self.db:self.db.execute('INSERT INTO events VALUES (?,?,?,?,?,?)',('2','newer','newer','隔壁继续聊天','[]',self.now+1))
+  with patch('agent.onebot_call',side_effect=[{'user_id':99},{'message_id':888}]):self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+2),1)
+ def test_outgoing_route_cannot_be_forged_or_sent_to_idle_group(self):
+  decision=self.outgoing_decision()
+  with self.assertRaises(ValueError):social.apply_decision(self.db,{'target_group':'1'},dict(decision,route_id='invented'),{},self.cfg,self.now)
+  self.cfg['human_presence']={'enabled':True}
+  with self.db:self.db.execute("DELETE FROM speaker_events WHERE group_id='2'")
+  self.assertEqual(mf.outgoing(self.db,self.cfg,'1',self.now),[])
+  mf.approve_outgoing(self.db,self.cfg,'1',decision,self.now)
+  self.assertEqual(self.db.execute('SELECT count(*) FROM deliveries').fetchone()[0],0)
+ def test_normal_reply_does_not_consume_program_share_cooldown(self):
+  decision=self.outgoing_decision()
+  social.apply_decision(self.db,{'target_group':'2','event_key':'2:reply'},{'action':'reply','text':'普通接话'}, {},self.cfg,self.now-1)
+  with self.db:self.db.execute("UPDATE deliveries SET status='sent',updated=?",(self.now-1,))
+  social.apply_decision(self.db,{'target_group':'1'},decision,{},self.cfg,self.now)
+  self.cfg['group_cooldown_seconds']=3600
+  with patch('agent.onebot_call',side_effect=[{'user_id':99},{'message_id':889}]):self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+1),1)
+ def test_outgoing_interface_retains_route_selector(self):
+  d=self.outgoing_decision()
+  args={k:d[k] for k in ('action','bundle_id','message_ids','route_id')};args['quality']='natural'
+  result=social.validate_decision(json.dumps({'call':{'name':'finish_turn','arguments':args}}))
+  self.assertEqual(result['route_id'],d['route_id'])
+ def test_program_keeps_quoted_messages_and_bot_punchline(self):
+  with self.db:
+   self.db.execute("UPDATE social_jobs SET trigger_reply='1' WHERE event_key='1:2'")
+   self.db.execute('INSERT INTO events VALUES (?,?,?,?,?,?)',('1','bot:99','bot-punchline','[自己] 包袱','[]',self.now-1))
+  decision=self.outgoing_decision()
+  candidate=decision['_outgoing_moments'][0]
+  self.assertEqual([m['message_id'] for m in candidate['messages']],['1','2','3','99'])
+  self.assertEqual(candidate['messages'][1]['reply_to'],'1')

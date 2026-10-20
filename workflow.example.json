@@ -78,6 +78,7 @@
     "version": 1
   },
   "merged_forward": {
-    "enabled": true
+    "enabled": true,
+    "cooldown_seconds": 60
   }
 }

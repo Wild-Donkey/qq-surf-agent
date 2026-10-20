@@ -179,3 +179,5 @@ python3 qq.py resume "群名关键词"
 ### 表情包素材库
 
 图片和 QQ mface 自动缓存，原始动图与供模型理解的首帧分开保留。worker 通过 images 状态接口写描述、tags、is_sticker，将普通截图与可复用表情区分；通过 search_emoticons 按描述/标签检索旧表情，view_emoticon 查看真实预览，再用 sticker ID 发送原始大表情。库按群隔离，未理解的图片不能直接发送，成功发送记录使用次数。无效可选表情不会拖垮文字回复。
+
+来源群的 worker 也能直接从 `outgoing_moments` 选本群节目，带 `destination.route_id` 主动合并转发到其他活跃群；不用等待邻群 worker 轮到。目的群仍在发送前校验真人活跃/人工暂停/隐私与去重。节目卡片默认每目标群至少间隔60秒（`merged_forward.cooldown_seconds`），普通回复不占分享冷却；目的群继续聊天不撤销独立的节目卡片。

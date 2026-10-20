@@ -17,10 +17,10 @@ TOOLS=[
  {'name':'list_emoticons','description':'读取本群可用表情目录'},
  {'name':'reply','description':'回复当前群，参数 text 和可选 emoticon'},
  {'name':'share','description':'分享给定 candidate_id，参数 candidate_id,text'},
- {'name':'merged_forward','description':'把隔壁群一段消息合并转发到当前目标群，参数 bundle_id、message_ids（按给定顺序至少2条）、quality=natural'},
+ {'name':'merged_forward','description':'合并转发一段节目：bundle_id、message_ids、quality=natural；搬本群节目到其他活跃群时再带 outgoing_moments.destination.route_id，省略route_id则搬入当前群'},
  {'name':'forward','description':'转发当前群中某条消息（原生转发卡片），参数 message_id（取自 recent_target_messages）'},
  {'name':'wait','description':'保持安静，参数 reason'}]
-ARGUMENTS={'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id'},'search_history':{'query'},'list_emoticons':set(),'search_emoticons':{'query','include_unreviewed'},'view_emoticon':{'id'},'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'merged_forward':{'bundle_id','message_ids','quality'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id','bundle_id','message_ids'}}
+ARGUMENTS={'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id'},'search_history':{'query'},'list_emoticons':set(),'search_emoticons':{'query','include_unreviewed'},'view_emoticon':{'id'},'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'merged_forward':{'bundle_id','message_ids','quality','route_id'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id','bundle_id','message_ids','route_id'}}
 READS={'get_memory_schema','update_states','read_context','get_member','search_history','list_emoticons','search_emoticons','view_emoticon'}
 def decode(raw):
  value=parse_json(raw,'worker_api')
@@ -62,13 +62,13 @@ def decision(call):
  if name=='finish_turn':
   if args.get('action') not in ('wait','reply','share','forward','merged_forward'):raise ValueError('invalid_finish_action')
   if not isinstance(args.get('text',''),str):raise ValueError('invalid_text')
-  return {'action':args['action'],'text':args.get('text','')[:180],'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'message_id':str(args.get('message_id','')) if args.get('message_id') else None,'reason':str(args.get('reason',''))[:200],'state_updates':{k:args[k] for k in ('group_state','members','images') if k in args}}
+  return {'action':args['action'],'text':args.get('text','')[:180],'route_id':args.get('route_id'),'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'message_id':str(args.get('message_id','')) if args.get('message_id') else None,'reason':str(args.get('reason',''))[:200],'state_updates':{k:args[k] for k in ('group_state','members','images') if k in args}}
  if name in READS:return {'action':'read','call':call,'text':''}
  if name=='forward':
   mid=str(args.get('message_id',''))
   if not mid:raise ValueError('forward_requires_message_id')
   return {'action':'forward','text':'','message_id':mid,'emoticon':None,'reason':''}
- return {'action':name,'text':args.get('text','')[:180],'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'reason':str(args.get('reason',''))[:200]}
+ return {'action':name,'text':args.get('text','')[:180],'route_id':args.get('route_id'),'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'reason':str(args.get('reason',''))[:200]}
 def read(db,cfg,target,payload,call):
  name=call['name'];args=call['arguments']
  if name=='get_memory_schema':return {k:memory_store.SCHEMA['$defs'][k] for k in ('FactInput','RelationInput','StateInput','GroupPortraitInput','PersonPortraitInput')}
