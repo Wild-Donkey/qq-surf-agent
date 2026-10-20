@@ -8,13 +8,14 @@ import memory_store
 TOOLS=[
  {'name':'get_memory_schema','description':'读取群/成员状态与画像的规范字段，不接受任意字段'},
  {'name':'update_states','description':'提交群状态 group_state 和成员状态 members:[{user_id,state}]，应用校验后落盘'},
- {'name':'finish_turn','description':'一次提交状态并结束：group_state,members,action(wait/reply/share),text,candidate_id,emoticon,reason'},
+ {'name':'finish_turn','description':'一次提交状态并结束：group_state,members,action(wait/reply/share/merged_forward),text,candidate_id,bundle_id,message_ids,quality,emoticon,reason'},
  {'name':'read_context','description':'读取应用准备的当前群上下文，无参数'},
  {'name':'get_member','description':'读取当前上下文内成员画像，参数 user_id'},
  {'name':'search_history','description':'按 query 检索当前群已落盘历史'},
  {'name':'list_emoticons','description':'读取本群可用表情目录'},
  {'name':'reply','description':'回复当前群，参数 text 和可选 emoticon'},
  {'name':'share','description':'分享给定 candidate_id，参数 candidate_id,text'},
+ {'name':'merged_forward','description':'把隔壁群一段消息合并转发到当前目标群，参数 bundle_id、message_ids（按给定顺序至少2条）、quality=natural'},
  {'name':'forward','description':'转发当前群中某条消息（原生转发卡片），参数 message_id（取自 recent_target_messages）'},
  {'name':'wait','description':'保持安静，参数 reason'}]
 READS={'get_memory_schema','update_states','read_context','get_member','search_history','list_emoticons'}
@@ -28,7 +29,7 @@ def decode(raw):
    value=parse_json(value['content'],'worker_api');continue
   if 'call' not in value:
    if 'action' in value:value={'call':{'name':'finish_turn','arguments':value}}
-   elif value.get('type') in ('wait','reply','share','forward'):
+   elif value.get('type') in ('wait','reply','share','forward','merged_forward'):
     value={'call':{'name':'finish_turn','arguments':{'action':value['type'],**{k:v for k,v in value.items() if k!='type'}}}}
   if isinstance(value.get('call'),dict) and isinstance(value['call'].get('arguments'),dict):
    args=dict(value['call']['arguments']);extra={k:v for k,v in value.items() if k!='call'}
@@ -43,27 +44,27 @@ def decode(raw):
  if call.get('name') not in {t['name'] for t in TOOLS}:raise ValueError('api_not_exposed')
  args=call.get('arguments',{})
  if not isinstance(args,dict):raise ValueError('invalid_api_arguments')
- name=call['name'];allowed={'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id'},'search_history':{'query'},'list_emoticons':set(),'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id'}}[name]
+ name=call['name'];allowed={'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id'},'search_history':{'query'},'list_emoticons':set(),'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'merged_forward':{'bundle_id','message_ids','quality'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id','bundle_id','message_ids'}}[name]
  if set(args)-allowed:raise ValueError('argument_not_exposed')
  if name in ('reply','share') and not isinstance(args.get('text',''),str):raise ValueError('invalid_text')
  return {'name':name,'arguments':args}
 def decision(call):
  name=call['name'];args=call['arguments']
  quality=args.get('quality')
- if (name in ('reply','share') or name=='finish_turn' and args.get('action') in ('reply','share')) and quality!='natural':
+ if (name in ('reply','share','merged_forward') or name=='finish_turn' and args.get('action') in ('reply','share','merged_forward')) and quality!='natural':
   result={'action':'wait','text':'','reason':'回复难接、尴尬或尚未确认自然，跳过本轮'}
   if name=='finish_turn':result['state_updates']={k:args[k] for k in ('group_state','members','images') if k in args}
   return result
  if name=='finish_turn':
-  if args.get('action') not in ('wait','reply','share','forward'):raise ValueError('invalid_finish_action')
+  if args.get('action') not in ('wait','reply','share','forward','merged_forward'):raise ValueError('invalid_finish_action')
   if not isinstance(args.get('text',''),str):raise ValueError('invalid_text')
-  return {'action':args['action'],'text':args.get('text','')[:180],'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'message_id':str(args.get('message_id','')) if args.get('message_id') else None,'reason':str(args.get('reason',''))[:200],'state_updates':{k:args[k] for k in ('group_state','members','images') if k in args}}
+  return {'action':args['action'],'text':args.get('text','')[:180],'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'message_id':str(args.get('message_id','')) if args.get('message_id') else None,'reason':str(args.get('reason',''))[:200],'state_updates':{k:args[k] for k in ('group_state','members','images') if k in args}}
  if name in READS:return {'action':'read','call':call,'text':''}
  if name=='forward':
   mid=str(args.get('message_id',''))
   if not mid:raise ValueError('forward_requires_message_id')
   return {'action':'forward','text':'','message_id':mid,'emoticon':None,'reason':''}
- return {'action':name,'text':args.get('text','')[:180],'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'reason':str(args.get('reason',''))[:200]}
+ return {'action':name,'text':args.get('text','')[:180],'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'reason':str(args.get('reason',''))[:200]}
 def read(db,cfg,target,payload,call):
  name=call['name'];args=call['arguments']
  if name=='get_memory_schema':return {k:memory_store.SCHEMA['$defs'][k] for k in ('FactInput','RelationInput','StateInput','GroupPortraitInput','PersonPortraitInput')}

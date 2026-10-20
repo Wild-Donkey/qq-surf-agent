@@ -262,7 +262,7 @@ def onebot_call(cfg, action, payload=None):
         error.retcode=code
         raise error
     data = result.get('data')
-    if action in ('send_group_msg','send_private_msg') and (not isinstance(data, dict) or data.get('message_id') is None):
+    if action in ('send_group_msg','send_private_msg','send_group_forward_msg') and (not isinstance(data, dict) or data.get('message_id') is None):
         raise ValueError('OneBot 未返回消息编号')
     return data
 

@@ -295,7 +295,7 @@ def dispatch(db, cfg, api_cfg, now=None):
     groups = configured_groups(cfg)
     jobs = db.execute("""SELECT d.*,c.source_group,c.text,c.images,c.kind,c.emoticon FROM deliveries d
         JOIN candidates c ON c.id=d.candidate_id WHERE d.status='approved' AND c.status='approved'
-        AND ((c.kind='reply' AND d.created<=?) OR (c.kind!='reply' AND d.created<=?))
+        AND ((c.kind IN ('reply','merged_forward') AND d.created<=?) OR (c.kind NOT IN ('reply','merged_forward') AND d.created<=?))
         ORDER BY CASE WHEN c.kind='reply' THEN 0 ELSE 1 END,d.id LIMIT 50""", (now-cfg.get('reply_delay_seconds',0),now-cfg.get('hold_seconds',120))).fetchall()
     sent = 0
     for job in jobs:
@@ -320,7 +320,7 @@ def dispatch(db, cfg, api_cfg, now=None):
             continue
         paused=db.execute('SELECT until_time FROM operator_pause WHERE group_id=?',(target,)).fetchone()
         if paused and paused[0]>now:continue
-        if job['kind']=='reply' and now-job['created']>180:
+        if job['kind'] in ('reply','merged_forward') and now-job['created']>180:
             with db:db.execute("UPDATE deliveries SET status='expired',updated=? WHERE id=?",(now,job['id']))
             continue
         # Serialize rate-limit accounting and claims across workers/processes.
@@ -358,7 +358,13 @@ def dispatch(db, cfg, api_cfg, now=None):
             if not participants.humans_recent(db,target,cfg):
                 with db:db.execute("UPDATE deliveries SET status='approved' WHERE id=?",(job['id'],))
                 continue
-            if job['kind']=='forward':
+            if job['kind']=='merged_forward':
+                import merged_forward
+                forward_payload=merged_forward.send_payload(db,cfg,target,job['source_group'],job['text'])
+                result=agent.onebot_call(api_cfg,'send_group_forward_msg',forward_payload)
+                text='[合并转发：'+source+'，'+str(len(forward_payload['messages']))+'条]'
+                parts=[{'type':'text','data':{'text':text}}]
+            elif job['kind']=='forward':
                 mid=str(job['text']).strip()
                 if not db.execute('SELECT 1 FROM events WHERE group_id=? AND message_id=?',(target,mid)).fetchone():
                     raise ValueError('forward_message_outside_group')

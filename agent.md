@@ -8,7 +8,7 @@
 
 示例（最常用）：`{"call":{"name":"finish_turn","arguments":{"action":"reply","text":"简短回复","quality":"natural"}}}`。
 
-- finish_turn：通常使用此接口，一次提交 group_state、members（user_id/state）、action（wait/reply/share）、text、可选 candidate_id/emoticon/reason，应用先保存状态再按规则执行行动。
+- finish_turn：通常使用此接口，一次提交 group_state、members（user_id/state）、action（wait/reply/share/merged_forward）、text、可选 candidate_id/emoticon/reason，应用先保存状态再按规则执行行动。
 - update_states：提交 group_state 和 members 数组，仅更新状态，可继续调用其他接口。
 - read_context：无参数，读取应用准备的当前群记录、持久记忆、未读窗口及覆盖标志。
 - get_member：参数 user_id，读取当前上下文内成员的账号类型、置信度及来源。你无权修改。
@@ -16,7 +16,10 @@
 - list_emoticons：无参数，读取内置表情与本群已缓存表情目录。
 - reply：参数 text，可选 emoticon（kind 为 face/sticker，id 必须来自目录）。最多一个表情，可只发表情。
 - share：参数 candidate_id、text，只能选应用给定候选。
+- merged_forward：参数 bundle_id、message_ids、quality="natural"。从 forward_bundles 选隔壁群有趣且完整的一段原话，message_ids 必须按提供的顺序选2到20条；应用合成一张原生转发卡片发送到当前目标群，保留原作者。不能指定群号或自行构造消息。
 - wait：参数 reason，本轮不发言。
+
+跨群分享要主动判断：隔壁出现复读接龙、抽象互动或连起来才好笑的素材，可以用 merged_forward，不必等人要求。只选有意思的完整片段，当前群话题不合适则wait。不转私人信息、联系方式或明确说不能搬的内容。应用检查目标群活跃、真人在场、冷却和去重，同一串消息不反复搬。
 
 本轮最多三次额外读取、一次终结操作。应用固定群号和收件人；不能输出任意 OneBot 操作、URL、文件路径或私信对象。
 
@@ -47,3 +50,5 @@ finish_turn/update_states 可带 images:[{reference,description}]，描述本轮
 应用会注入 memory_contract；需要完整定义时调用 get_memory_schema。group_state 和 members[].state 应提交对象：summary、current_topics、open_threads、decisions、boundaries。除 summary 外都是事实数组，每项必须含 text、evidence（本群真实 event_key 数组）、confidence（0到1）。只提交本轮需要变更的字段；省略保留，空数组明确清空。不要把整个 Markdown 段落塞进一个字段来绕过规范。长期画像与近期状态分开，群规则、个人偏好不能根据一时玩笑确认。修订号、来源、时间、账号类型权威来源由应用管理。
 
 人物记忆以账号为主体，默认 scope="person"，跨群观察合并到同一个人的画像与一般状态，不按群分章。只有明确的某群特殊关系、称呼、边界才在 members[] 中指定 scope="group"；当前群由应用绑定。群本身的 group_state / group.md 仍独立写，不能省略或混到人物主画像里。
+
+合并转发示例：`{"call":{"name":"finish_turn","arguments":{"action":"merged_forward","bundle_id":"应用给定id","message_ids":["原消息1","原消息2"],"quality":"natural","reason":"这段接龙整体才好笑"}}}`。应用在当前目标群作判断，看到隔壁群候选时就是在决定是否搬进当前群；不用另选群号。
