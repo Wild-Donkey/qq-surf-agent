@@ -246,7 +246,7 @@ def send(db, cfg):
 
 
 def onebot_call(cfg, action, payload=None):
-    allowed = {'get_status', 'get_login_info', 'get_group_list', 'get_friend_list', 'get_group_msg_history', 'send_group_msg', 'send_private_msg'}
+    allowed = {'get_status', 'get_login_info', 'get_group_list', 'get_group_member_list', 'get_friend_list', 'get_group_msg_history', 'send_group_msg', 'send_private_msg'}
     if action not in allowed:
         raise ValueError('不支持此 OneBot 操作')
     sender = cfg.get('sender', {})
@@ -256,7 +256,11 @@ def onebot_call(cfg, action, payload=None):
         raise ValueError('OneBot 目前仅允许连接本机服务')
     result = json.loads(request(base.rstrip('/') + '/' + action, payload or {}, sender_token(sender)))
     if result.get('status') != 'ok' or result.get('retcode') != 0:
-        raise ValueError('OneBot 操作未成功')
+        code=result.get('retcode')
+        code=code if isinstance(code,int) else 'unknown'
+        error=ValueError('OneBot 操作未成功，retcode='+str(code))
+        error.retcode=code
+        raise error
     data = result.get('data')
     if action in ('send_group_msg','send_private_msg') and (not isinstance(data, dict) or data.get('message_id') is None):
         raise ValueError('OneBot 未返回消息编号')

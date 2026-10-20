@@ -2,6 +2,7 @@
 """Workspace-local supervisor: singleton, rotating logs, restart with backoff."""
 import argparse
 import fcntl
+import json
 import os
 from pathlib import Path
 import signal
@@ -26,14 +27,27 @@ pidfile=WORK/'workflow-supervisor.pid'
 pidfile.write_text(str(os.getpid()))
 running=True
 child=None
+diagnostic=None
+diagnostic_started=0
+
+def start_diagnostic():
+    global diagnostic,diagnostic_started
+    cfg=json.loads(args.config.read_text())
+    if not cfg.get('diagnostics',{}).get('enabled'):return
+    log=(WORK/'diagnostics.log').open('ab',buffering=0)
+    try:diagnostic=subprocess.Popen([sys.executable,'-u',str(ROOT/'diagnostics.py'),'--config',str(args.config.resolve())],cwd=str(ROOT),stdout=log,stderr=subprocess.STDOUT)
+    finally:log.close()
+    diagnostic_started=time.monotonic()
 
 def stop(*_):
     global running
     running=False
     if child is not None and child.poll() is None:child.terminate()
+    if diagnostic is not None and diagnostic.poll() is None:diagnostic.terminate()
 signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
 delay=2
 try:
+    start_diagnostic()
     while running:
         log=WORK/'workflow.log'
         if log.exists() and log.stat().st_size>2_000_000:
@@ -44,6 +58,7 @@ try:
             child=subprocess.Popen([sys.executable,'-u',str(ROOT/'workflow.py'),'--config',str(args.config.resolve()),'run'],cwd=str(ROOT),stdout=out,stderr=subprocess.STDOUT)
             (WORK/'workflow-child.pid').write_text(str(child.pid))
             while child.poll() is None:
+                if diagnostic is not None and diagnostic.poll() is not None and time.monotonic()-diagnostic_started>60:start_diagnostic()
                 if (WORK/'workflow.stop').exists():
                     (WORK/'workflow.stop').unlink()
                     stop()
@@ -53,11 +68,23 @@ try:
                     break
                 time.sleep(1)
         if not running:break
+        try:
+            import alerts,workflow
+            cfg=json.loads(args.config.read_text());database=Path(cfg['database'])
+            if not database.is_absolute():database=args.config.resolve().parent/database
+            db=workflow.connect(database)
+            alerts.record(db,'workflow_process_exit','聊天服务进程退出（'+str(child.returncode)+'），正在重启。')
+            db.close()
+        except Exception:pass
         if time.monotonic()-started>300:delay=2
         for _ in range(delay):
             if not running:break
             time.sleep(1)
         delay=min(delay*2,60)
 finally:
+    if diagnostic is not None and diagnostic.poll() is None:
+        diagnostic.terminate()
+        try:diagnostic.wait(timeout=10)
+        except subprocess.TimeoutExpired:diagnostic.kill()
     pidfile.unlink(missing_ok=True)
     lock.close()

@@ -36,5 +36,18 @@
     "owner_qq": "YOUR_OWNER_QQ",
     "cooldown_seconds": 1800
   },
-  "operator_pause_minutes": 5
+  "operator_pause_minutes": 5,
+  "onboarding": {
+    "enabled": true
+  },
+  "diagnostics": {
+    "enabled": true,
+    "model": "gpt-6-luna",
+    "cooldown_seconds": 3600,
+    "timeout_seconds": 180
+  },
+  "usage_report": {
+    "enabled": true,
+    "interval_seconds": 10800
+  }
 }

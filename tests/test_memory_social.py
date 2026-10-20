@@ -80,6 +80,15 @@ class SocialTests(unittest.TestCase):
         workflow.ingest(self.db,event(2),self.cfg)
         with patch('social.load_model',return_value={'enabled':True,'api_key':'test'}),patch('social.call_model') as call:
             social.tick(self.db,self.cfg);call.assert_not_called()
+    def test_daily_cap_can_be_explicitly_removed(self):
+        workflow.ingest(self.db,event(),self.cfg)
+        for _ in range(60):self.db.execute('INSERT INTO model_calls(created,status) VALUES (?,?)',(time.time()-10,'ok'))
+        self.db.commit()
+        model={'enabled':True,'api_key':'test','max_requests_per_day':60}
+        with patch('social.load_model',return_value=model),patch('social.call_model',return_value=({'action':'wait','text':''},{})) as call:
+            social.tick(self.db,self.cfg);call.assert_not_called()
+            model['max_requests_per_day']=None
+            social.tick(self.db,self.cfg);call.assert_called_once()
 
 
 if __name__=='__main__':unittest.main()

@@ -1,5 +1,6 @@
 """Durable, deduplicated owner notifications. No secrets or raw chat in alerts."""
 import hashlib
+import json
 import sqlite3
 import time
 import urllib.error
@@ -11,13 +12,15 @@ def ensure_schema(db):
       id INTEGER PRIMARY KEY, fingerprint TEXT UNIQUE, code TEXT, summary TEXT,
       count INTEGER, first_seen REAL,last_seen REAL,status TEXT,notify_after REAL,
       message_id TEXT)''')
+    if 'details' not in {r[1] for r in db.execute('PRAGMA table_info(alerts)')}:
+        db.execute('ALTER TABLE alerts ADD COLUMN details TEXT')
     db.commit()
 
 
-def record(db,code,summary,scope='service',now=None):
+def record(db,code,summary,scope='service',now=None,details=None):
     now=time.time() if now is None else now
     fp=hashlib.sha256((str(code)+':'+str(scope)).encode()).hexdigest()
-    summary=str(summary)[:240]
+    summary=str(summary)[:600 if code=='usage_report' else 240]
     # Callers supply fixed summaries and error codes, never exception bodies or credentials.
     with db:
         row=db.execute('SELECT id,status,notify_after FROM alerts WHERE fingerprint=?',(fp,)).fetchone()
@@ -26,6 +29,8 @@ def record(db,code,summary,scope='service',now=None):
             db.execute('UPDATE alerts SET count=count+1,last_seen=?,status=?,summary=? WHERE id=?',(now,status,summary,row['id']))
         else:db.execute('INSERT INTO alerts(fingerprint,code,summary,count,first_seen,last_seen,status,notify_after) VALUES (?,?,?,?,?,?,?,?)',
                         (fp,str(code)[:80],summary,1,now,now,'pending',now))
+        if details is not None:
+            db.execute('UPDATE alerts SET details=? WHERE fingerprint=?',(json.dumps(details,ensure_ascii=False)[:4000],fp))
 
 
 def flush(db,cfg,api_cfg,now=None):
@@ -39,7 +44,7 @@ def flush(db,cfg,api_cfg,now=None):
     try:
         login=agent.onebot_call(api_cfg,'get_login_info')
         if str(login.get('user_id'))!=str(cfg['bot_id']):raise ValueError('Wrong bot account')
-        text='🪨 bot 异常通知\n'+row['summary']+'\n类型：'+row['code']+'\n累计次数：'+str(row['count'])+'\n聊天原文和密钥未包含在通知中。'
+        text=('🪨 bot 用量报告\n'+row['summary']) if row['code']=='usage_report' else ('🪨 '+row['summary']+'\n'+row['code'])
         result=agent.onebot_call(api_cfg,'send_private_msg',{'user_id':int(owner),'message':[{'type':'text','data':{'text':text}}]})
         with db:db.execute("UPDATE alerts SET status='sent',message_id=?,notify_after=? WHERE id=?",(str(result['message_id']),now+cfg.get('alerts',{}).get('cooldown_seconds',1800),row['id']))
         return 1

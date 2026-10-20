@@ -19,6 +19,8 @@ from urllib.parse import urlsplit
 import agent
 import social
 import alerts
+import usage_report
+import onboarding
 from memory import MarkdownMemory
 from sessions import SessionPool
 
@@ -150,6 +152,8 @@ def ingest(db, event, cfg, now=None):
     if message_id is None or now - float(event.get('time', now)) > cfg.get('max_event_age_seconds', 300):
         return 'old'
     text, images = normalize(event)
+    if any(isinstance(p,dict) and p.get('type')=='at' and str(p.get('data',{}).get('qq'))==str(cfg['bot_id']) for p in (event.get('message') if isinstance(event.get('message'),list) else [])):
+        text='[@你] '+text
     if MARK in text:
         return 'loop'
     fp = fingerprint(text, images)
@@ -313,10 +317,31 @@ def handler(db_path, cfg, secret):
             if self.path != '/events':
                 self.send_error(404); return
             try:
-                n=int(self.headers.get('Content-Length','0'))
-                if not 0<n<=262144:
-                    self.send_error(413); return
-                body=self.rfile.read(n)
+                self.connection.settimeout(10)
+                if self.headers.get('Transfer-Encoding','').lower()=='chunked':
+                    if self.headers.get('Content-Length') is not None:raise ValueError('Ambiguous framing')
+                    chunks=[];total=0
+                    while True:
+                        line=self.rfile.readline(128)
+                        if not line.endswith(b'\r\n'):raise ValueError('Invalid chunk header')
+                        n=int(line[:-2].split(b';',1)[0],16)
+                        if n<0 or total+n>262144:self.send_error(413);return
+                        if not n:
+                            if self.rfile.readline(8192)!=b'\r\n':raise ValueError('Unsupported trailers')
+                            break
+                        chunk=self.rfile.read(n)
+                        if len(chunk)!=n or self.rfile.read(2)!=b'\r\n':raise ValueError('Incomplete chunk')
+                        chunks.append(chunk);total+=n
+                    body=b''.join(chunks)
+                    if not body:raise ValueError('Empty body')
+                elif self.headers.get('Transfer-Encoding'):
+                    raise ValueError('Unsupported transfer encoding')
+                else:
+                    n=int(self.headers.get('Content-Length','0'))
+                    if not 0<n<=262144:
+                        self.send_error(413); return
+                    body=self.rfile.read(n)
+                    if len(body)!=n:raise ValueError('Incomplete body')
                 signature='sha1='+hmac.new(secret.encode(),body,hashlib.sha1).hexdigest()
                 if not hmac.compare_digest(self.headers.get('X-Signature',''),signature):
                     self.send_error(403); return
@@ -376,8 +401,10 @@ def main():
                     try:
                         cfg=current_config()
                         prune(db,cfg)
+                        usage_report.tick(db,cfg)
                         social.tick(db,cfg,sessions)
                         dispatch(db,cfg,api_cfg)
+                        cfg=onboarding.tick(db,cfg,api_cfg,args.config)
                         checked=db.execute("SELECT value FROM metrics WHERE key='last_bridge_check'").fetchone()
                         if not checked or time.time()-float(checked[0])>=60:
                             try:
