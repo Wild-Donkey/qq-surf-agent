@@ -6,7 +6,7 @@
   "context_dir": "context",
   "llm_file": "llm.local.json",
   "inactive_group_days": 14,
-  "tick_seconds": 10,
+  "tick_seconds": 1,
   "hold_seconds": 120,
   "context_messages": 12,
   "context_char_budget": 3000,
@@ -27,8 +27,10 @@
   "interaction": {
     "enabled": true,
     "flush_seconds": 60,
-    "debounce_seconds": 8,
-    "min_model_interval_seconds": 15,
+    "max_qps": 0.2,
+    "max_batch_messages": 30,
+    "batch_char_budget": 12000,
+    "min_model_interval_seconds": 5,
     "active_group_seconds": 1800,
     "idle_flush_seconds": 300
   },

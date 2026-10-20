@@ -131,7 +131,7 @@ def greet(db,cfg,now):
         gid=row['group_id']
         active=db.execute('SELECT last_member_message FROM group_activity WHERE group_id=?',(gid,)).fetchone()
         if not active or not 0<=now-active[0]<=cfg.get('inactive_group_days',14)*86400:continue
-        text='大家好，我叫石头 🪨，是个 AI bot，现在用 '+str(model.get('model','未知模型'))+'。人设是短句接梗的冲浪搭子，偶尔分享有意思的东西，不会每句都接。打扰了可以直接叫我安静。'
+        text='大家好，我是个 AI bot，现在用 '+str(model.get('model','未知模型'))+'。就当我是普通群友，只不过喜欢到处搬屎、接梗聊天。称呼你们随便起，喊 Luna 也行。打扰了可以直接叫我安静。'
         fp=hashlib.sha256(('intro:'+gid).encode()).hexdigest()
         with db:
             db.execute("INSERT OR IGNORE INTO candidates(fingerprint,source_group,text,images,created,status,kind) VALUES (?,?,?,'[]',?,'approved','reply')",(fp,gid,text,now))

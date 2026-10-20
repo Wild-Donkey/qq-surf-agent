@@ -91,4 +91,30 @@ class SocialTests(unittest.TestCase):
             social.tick(self.db,self.cfg);call.assert_called_once()
 
 
+    def test_batch_reads_every_message_fifo_and_limits_qps(self):
+        self.cfg['interaction'].update(max_qps=0.2,max_batch_messages=3)
+        for mid in range(8):
+            message=event(mid+1);message['message']=[{'type':'text','data':{'text':'消息'+str(mid)}}]
+            workflow.ingest(self.db,message,self.cfg)
+        model={'enabled':True,'api_key':'test'}
+        with patch('social.load_model',return_value=model),patch('social.call_model',return_value=({'action':'wait','text':''},{})) as call:
+            social.tick(self.db,self.cfg)
+            self.assertEqual([m['text'] for m in call.call_args[0][1]['unread_messages']],['消息0','消息1','消息2'])
+            social.tick(self.db,self.cfg);self.assertEqual(call.call_count,1)
+            for _ in range(2):
+                with self.db:self.db.execute('UPDATE model_calls SET created=created-6')
+                social.tick(self.db,self.cfg)
+            read=[m['text'] for invocation in call.call_args_list for m in invocation[0][1]['unread_messages']]
+            self.assertEqual(read,['消息'+str(i) for i in range(8)])
+        self.assertEqual(self.db.execute("SELECT count(*) FROM social_jobs WHERE status='decided'").fetchone()[0],8)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM social_jobs WHERE status='coalesced'").fetchone()[0],0)
+    def test_batch_budget_keeps_excess_messages_pending(self):
+        for mid in range(3):
+            message=event(mid+1);message['message']=[{'type':'text','data':{'text':str(mid)*6000}}]
+            workflow.ingest(self.db,message,self.cfg)
+        job=self.db.execute("SELECT * FROM social_jobs WHERE status='pending' ORDER BY created LIMIT 1").fetchone()
+        batch=social.pending_batch(self.db,job,{'batch_char_budget':6000},time.time())
+        self.assertEqual(len(batch),1)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM social_jobs WHERE status='pending'").fetchone()[0],3)
+
 if __name__=='__main__':unittest.main()
