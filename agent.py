@@ -260,6 +260,7 @@ def onebot_call(cfg, action, payload=None):
         code=code if isinstance(code,int) else 'unknown'
         error=ValueError('OneBot 操作未成功，retcode='+str(code))
         error.retcode=code
+        error.wording=str(result.get('wording') or result.get('message') or '')
         raise error
     data = result.get('data')
     if action in ('send_group_msg','send_private_msg','send_group_forward_msg') and (not isinstance(data, dict) or data.get('message_id') is None):

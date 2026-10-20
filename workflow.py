@@ -361,8 +361,10 @@ def dispatch(db, cfg, api_cfg, now=None):
         db.commit()
         source = groups[job['source_group']]['name']
         text=job['text'] if job['kind']=='reply' else MARK+source+'\n'+(job['caption'] or job['text'])
+        emoticon=json.loads(job['emoticon']) if job['emoticon'] else None
+        # Big stickers always ride their own bubble (or a pure-sticker reply); small faces stay inline.
+        sticker_parts=emoticons.segments(cfg['context_dir'],target,emoticon) if emoticon and emoticon.get('kind')=='sticker' else []
         parts = [{'type':'text','data':{'text':text}}] if text else []
-        if job['emoticon']:parts.extend(emoticons.segments(cfg['context_dir'],target,json.loads(job['emoticon'])))
         if cfg.get('send_images', True):
             parts.extend({'type':'image','data':{'file':image['url']}} for image in json.loads(job['images']))
         try:
@@ -391,18 +393,29 @@ def dispatch(db, cfg, api_cfg, now=None):
                 parts=[{'type':'text','data':{'text':'[转发消息 '+mid+']'}}]
                 text='[转发消息 '+mid+']'
             else:
-                result = agent.onebot_call(api_cfg,'send_group_msg',{'group_id':int(target),'message':parts})
-            archive.record_event(cfg,{'group_id':target,'message_id':str(result['message_id']),'user_id':cfg['bot_id'],'time':now,'message':parts})
+                result = agent.onebot_call(api_cfg,'send_group_msg',{'group_id':int(target),'message':parts or sticker_parts})
+            archive.record_event(cfg,{'group_id':target,'message_id':str(result['message_id']),'user_id':cfg['bot_id'],'time':now,'message':parts or sticker_parts})
             with db:
                 db.execute("UPDATE deliveries SET status='sent',message_id=?,updated=? WHERE id=?",(str(result['message_id']),now,job['id']))
                 db.execute('INSERT OR IGNORE INTO seen VALUES (?,?,?)',(target,job['fingerprint'],now))
-                db.execute('INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?)',(target,'bot:'+str(result['message_id']),job['fingerprint'],'[自己] '+text,job['images'],now))
+                record_text=text if text else '[大表情]'
+                db.execute('INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?)',(target,'bot:'+str(result['message_id']),job['fingerprint'],'[自己] '+record_text,job['images'],now))
+            # A text reply also carrying a big sticker: the sticker follows on its own bubble.
+            # Its failure can't unsend the text, so it never fails the delivery.
+            if parts and sticker_parts:
+                try:
+                    sticker_result=agent.onebot_call(api_cfg,'send_group_msg',{'group_id':int(target),'message':sticker_parts})
+                    archive.record_event(cfg,{'group_id':target,'message_id':str(sticker_result['message_id']),'user_id':cfg['bot_id'],'time':now,'message':sticker_parts})
+                    with db:
+                        db.execute('INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?)',(target,'bot:'+str(sticker_result['message_id']),job['fingerprint']+':sticker','[自己] [大表情]','[]',now))
+                except Exception as sticker_exc:
+                    alerts.record(db,'delivery_sticker_failed','文字已发出，但配套大表情发送失败。',scope=str(target),details={'target_group':str(target),'delivery_id':job['id'],'error':type(sticker_exc).__name__})
             if cfg.get('interaction',{}).get('enabled'):
-                memory=MarkdownMemory(cfg.get('context_dir',ROOT/'context'))
-                try:memory.add_note('group',target,'自己最近发言：'+text)
+                memory=MarkdownMemory(cfg['context_dir'],ROOT/'context')
+                try:memory.add_note('group',target,'自己最近发言：'+(text or '[大表情]'))
                 finally:memory.close()
-            if job['emoticon']:
-                emoticons.mark_used(cfg['context_dir'],target,json.loads(job['emoticon']))
+            if emoticon:
+                emoticons.mark_used(cfg['context_dir'],target,emoticon)
             sent += 1
         except Exception as exc:
             with db:

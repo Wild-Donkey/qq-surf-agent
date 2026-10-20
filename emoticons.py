@@ -90,23 +90,35 @@ def recent_echo(root,group,identity,now=None):
  row=db.execute('SELECT last_received,last_used FROM stickers WHERE id=? AND group_id=?',(str(identity),str(group))).fetchone();db.close()
  return bool(row and (row['last_received'] and now-row['last_received']<60 or row['last_used'] and now-row['last_used']<90))
 
-def reactions(root,group,query='',limit=12):
- now=time.time();db=connect(root)
- rows=db.execute('SELECT * FROM stickers WHERE group_id=? AND reviewed=1 AND is_sticker=1',(str(group),)).fetchall();db.close()
+def _rank_reactions(root,rows,query,now,echo_group=None):
  cues=[]
  for words,tags in [(('哈哈','笑死','乐'),['好笑','开心','笑']), (('?','？','啥'),['疑惑','问号','震惊']), (('无语','离谱','蚌'),['无语','嫌弃','离谱']), (('好耶','牛','厉害'),['赞','开心','庆祝'])]:
   if any(word in query for word in words):cues.extend(tags)
  terms=set(re.findall(r'[a-z0-9_]+|[\u4e00-\u9fff]',query.lower()))
  ranked=[]
  for row in rows:
-  if row['last_received'] and now-row['last_received']<60 or row['last_used'] and now-row['last_used']<90:continue
+  if echo_group is not None and (row['last_received'] and now-row['last_received']<60 or row['last_used'] and now-row['last_used']<90):continue
   try:asset_path(root,row['original_key'] or row['media_key'])
   except ValueError:continue
   tags=json.loads(row['tags'] or '[]');text=row['description']+' '+' '.join(tags)
   score=sum(t in text.lower() for t in terms)+3*sum(tag in text for tag in cues)
   item={'id':row['id'],'description':row['description'],'tags':tags,'animated':bool(row['animated']),'uses':row['uses'],'standalone_reply':True}
+  if echo_group is None:item['group_id']=row['group_id']
   ranked.append((score,-min(row['uses'],10),-row['last_used'],-row['updated'],item))
  ranked.sort(key=lambda r:r[:4],reverse=True)
+ return ranked
+
+def reactions(root,group,query='',limit=12):
+ now=time.time();db=connect(root)
+ rows=db.execute('SELECT * FROM stickers WHERE group_id=? AND reviewed=1 AND is_sticker=1',(str(group),)).fetchall();db.close()
+ ranked=_rank_reactions(root,rows,query,now,echo_group=str(group))
+ return [r[4] for r in ranked[:limit]]
+
+def reactions_global(root,query='',limit=12):
+ """Cross-group sticker pool; items carry group_id because cached assets are isolated per group."""
+ now=time.time();db=connect(root)
+ rows=db.execute('SELECT * FROM stickers WHERE reviewed=1 AND is_sticker=1').fetchall();db.close()
+ ranked=_rank_reactions(root,rows,query,now)
  return [r[4] for r in ranked[:limit]]
 
 def catalog(root,group,query=''):

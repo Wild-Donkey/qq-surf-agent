@@ -40,13 +40,13 @@ class PrivateTests(unittest.TestCase):
   moderation.ingest(self.db,{'post_type':'notice','notice_type':'group_ban','sub_type':'ban','group_id':1,'user_id':99,'operator_id':8,'time':self.now,'duration':500},self.cfg,self.now)
   def api(a,b,c=None):return {'user_id':99} if b=='get_login_info' else [{'user_id':99,'shut_up_timestamp':0}]
   with patch('moderation.agent.onebot_call',side_effect=api) as mocked,patch('participants.humans_recent',return_value=True):
-   moderation.check_recovery(self.db,self.cfg,{},self.now+1)
-   moderation.check_recovery(self.db,self.cfg,{},self.now+2)
+   moderation.check_recovery(self.db,self.cfg,{},self.now+1800)
+   moderation.check_recovery(self.db,self.cfg,{},self.now+1801)
    self.assertEqual(mocked.call_count,2)
    self.assertEqual(self.db.execute('select count(*) from deliveries').fetchone()[0],1)
-   self.assertFalse(moderation.is_muted(self.db,1,self.now+2))
+   self.assertFalse(moderation.is_muted(self.db,1,self.now+1801))
  def test_still_muted_never_queues_return(self):
-  moderation.ingest(self.db,{'post_type':'notice','notice_type':'group_ban','sub_type':'ban','group_id':1,'user_id':99,'operator_id':8,'time':self.now,'duration':500},self.cfg,self.now)
-  def api(a,b,c=None):return {'user_id':99} if b=='get_login_info' else [{'user_id':99,'shut_up_timestamp':self.now+500}]
-  with patch('moderation.agent.onebot_call',side_effect=api):moderation.check_recovery(self.db,self.cfg,{},self.now+1)
+  moderation.ingest(self.db,{'post_type':'notice','notice_type':'group_ban','sub_type':'ban','group_id':1,'user_id':99,'operator_id':8,'time':self.now,'duration':100000},self.cfg,self.now)
+  def api(a,b,c=None):return {'user_id':99} if b=='get_login_info' else [{'user_id':99,'shut_up_timestamp':self.now+100000}]
+  with patch('moderation.agent.onebot_call',side_effect=api):moderation.check_recovery(self.db,self.cfg,{},self.now+1800)
   self.assertEqual(self.db.execute('select count(*) from deliveries').fetchone()[0],0)
