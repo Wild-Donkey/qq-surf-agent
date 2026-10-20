@@ -111,6 +111,8 @@ def read(db,cfg,target,payload,call):
   finally:disk.close()
  raise ValueError('not_read_api')
 def settle_memory(memory,group,batch,views):
+ # Foreign events must never become this group's local episodic memory.
+ if any('source_group' in row.keys() and str(row['source_group'])!=str(group) for row in batch):raise ValueError('cross_group_memory_window')
  # Raw episode bookkeeping is automatic; semantic state comes through update_states.
  summary='；'.join(str(v['speaker'])+'：'+v['text'][:160] for v in views)[:1600]
  state=memory.conversation_state(group) or ('近期原话摘录（非语义结论，原文可按历史接口查阅）：\n'+summary)

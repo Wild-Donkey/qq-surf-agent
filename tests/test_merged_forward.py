@@ -60,15 +60,16 @@ class MergedForwardTests(unittest.TestCase):
  def test_message_trigger_worker_receives_bundle_and_queues_card(self):
   with self.db:
    self.db.execute('INSERT INTO events VALUES (?,?,?,?,?,?)',('2','20','target-fp','继续聊天','[]',self.now-20))
+   participants.observe(self.db,{'group_id':2,'user_id':77,'message_id':20,'time':self.now-20},self.cfg,'继续聊天',self.now-20)
    self.db.execute("UPDATE social_jobs SET status='decided'")
   workflow.ingest(self.db,{'post_type':'message','message_type':'group','group_id':1,'user_id':8,'message_id':4,'time':self.now-6,'message':[{'type':'text','data':{'text':'艾草'}}]},self.cfg,self.now-6)
-  with self.db:self.db.execute("UPDATE social_jobs SET status='decided' WHERE target_group='1'")
+  with self.db:self.db.execute("UPDATE social_jobs SET status='decided' WHERE target_group='2'")
   def model_call(model,payload):
-   bundle=payload['forward_bundles'][0]
-   return social.validate_decision(json.dumps({'call':{'name':'finish_turn','arguments':{'action':'merged_forward','bundle_id':bundle['bundle_id'],'message_ids':[m['message_id'] for m in bundle['messages']],'quality':'natural'}}})),{}
+   bundle=payload['outgoing_moments'][0]
+   return social.validate_decision(json.dumps({'call':{'name':'finish_turn','arguments':{'action':'merged_forward','bundle_id':bundle['bundle_id'],'route_id':bundle['destination']['route_id'],'message_ids':[m['message_id'] for m in bundle['messages']],'quality':'natural'}}})),{}
   with patch('social.load_model',return_value={'enabled':True,'api_key':'test'}),patch('social.call_model',side_effect=model_call):social.tick(self.db,self.cfg)
   row=self.db.execute("SELECT d.target_group,d.status,c.kind FROM deliveries d JOIN candidates c ON c.id=d.candidate_id").fetchone()
-  self.assertIsNotNone(row);self.assertEqual(tuple(row),('2','approved','merged_forward'))
+  self.assertIsNotNone(row);self.assertEqual(tuple(row),('2','approved','moment_forward'))
  def test_aged_source_and_optout_after_draft_are_rejected(self):
   self.approve();data=self.db.execute('SELECT text FROM candidates').fetchone()[0]
   with self.assertRaises(ValueError):mf.send_payload(self.db,self.cfg,'2','1',data,self.now+1000)

@@ -302,6 +302,9 @@ def dispatch(db, cfg, api_cfg, now=None):
         target = job['target_group']
         if target not in groups or job['source_group'] not in groups:
             continue
+        if job['kind']=='reply' and str(job['source_group'])!=str(target):
+            with db:db.execute("UPDATE deliveries SET status='blocked_cross_group_reply' WHERE id=?",(job['id'],))
+            continue
         if not group_is_active(db,target,cfg,now):
             continue
         if not participants.humans_recent(db,target,cfg,now):continue

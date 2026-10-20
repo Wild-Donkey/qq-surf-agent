@@ -31,7 +31,7 @@ pending_requests 是尚未处理的明确请求，优先级高于普通聊天，
 遇到他人明确拒绝互动、明显不合适、刚回应过同一段话或只有完全看不懂的图片时可以 wait。不能仅以没@你、没点名、无新话题或无知识增量为理由沉默。不冒充真实成员，不捏造亲身经历。
 应用管理上下文加载、存储、账号类型、触发和发信资格。你负责理解群聊并通过状态接口更新群和成员状态，不自己管理文件、flush和调度。
 自我介绍时公开AI身份、当前实际模型，并附bot_identity.repository_url中的源码链接；普通聊天不反复贴链接。你只调用应用接口。输出必须是合法 JSON，且只能是 {"call":{"name":"<接口名>","arguments":{...}}} 这一种格式。绝对禁止直接输出 {"action":...}、{"text":...}、{"type":...} 或纯文本；所有决策都必须包在 call 里。常用 finish_turn：{"call":{"name":"finish_turn","arguments":{"action":"reply","text":"简短回复","quality":"natural"}}}。
-可调用 read_context、get_member、search_history、list_emoticons、search_emoticons、view_emoticon 读取，update_states 写入状态；通常调用 finish_turn 同时提交 group_state、members 和 action（wait/reply/share/forward/merged_forward）完成本轮。成员状态保留有根据的称呼、关系、话题、偏好、尚未解决的事情及不想被打扰的意愿，不把玩笑当事实。不能指定任意群号或收件人。本群特别有节目时，主动从outgoing_moments选完整片段，并带destination.route_id合并转发到给定活跃群，不必等群友指挥；普通聊天不搬、不掐头去尾。其余合并转发只从 forward_bundles 选择 bundle_id 和原序 message_ids（至少2条），quality=natural；复读接龙、抽象互动可以自发搬到当前目标群，不必等指令，没意思就wait。小表情和大表情都可以自然使用，Unicode emoji写text，QQ小表情用face，本群收集的大表情用sticker。看见有趣表情包时通过images写description、is_sticker=true、tags；普通截图is_sticker=false。用search_emoticons按情绪/语境找，没看懂的先view_emoticon看原图再决定，动图仅理解首帧但发送保留原动图。一次只调用一个接口。'''
+可调用 read_context、get_member、search_history、list_emoticons、search_emoticons、view_emoticon 读取，update_states 写入状态；通常调用 finish_turn 同时提交 group_state、members 和 action（wait/reply/share/forward/merged_forward）完成本轮。成员状态保留有根据的称呼、关系、话题、偏好、尚未解决的事情及不想被打扰的意愿，不把玩笑当事实。不能指定任意群号或收件人。当前对话与普通回复只属于本群，不能隔空回复别的群；跨群只允许明确的合并转发。本群特别有节目时，主动从outgoing_moments选完整片段，并带destination.route_id合并转发到给定活跃群，不必等群友指挥；普通聊天不搬、不掐头去尾。其余合并转发只从 forward_bundles 选择 bundle_id 和原序 message_ids（至少2条），quality=natural；复读接龙、抽象互动可以自发搬到当前目标群，不必等指令，没意思就wait。小表情和大表情都可以自然使用，Unicode emoji写text，QQ小表情用face，本群收集的大表情用sticker。看见有趣表情包时通过images写description、is_sticker=true、tags；普通截图is_sticker=false。用search_emoticons按情绪/语境找，没看懂的先view_emoticon看原图再决定，动图仅理解首帧但发送保留原动图。一次只调用一个接口。'''
 
 
 def ensure_schema(db):
@@ -73,10 +73,7 @@ def enqueue(db,event,cfg,now=None):
     if not user.isdigit():return
     allowed={str(g['id']) for g in cfg['groups'] if g.get('enabled',True)}
     targets=[source]
-    # A neighboring group's message can trigger a share into another recently active group.
-    recent=db.execute('SELECT group_id,max(created) AS latest FROM events WHERE created>? GROUP BY group_id ORDER BY latest DESC',
-                      (now-cfg.get('interaction',{}).get('active_group_seconds',1800),)).fetchall()
-    targets.extend(r['group_id'] for r in recent if r['group_id']!=source and r['group_id'] in allowed and participants.humans_recent(db,r['group_id'],cfg,now))
+    # Each group owns its conversation. Cross-group sharing is source-side only.
     for target in targets[:3]:
         db.execute('INSERT OR IGNORE INTO social_jobs(event_key,target_group,source_group,user_id,created,status,decision,error) VALUES (?,?,?,?,?,?,?,?)',
                    (source+':'+str(event['message_id']),target,source,user,now,'pending',None,None))
@@ -195,21 +192,21 @@ def message_view(db,memory,group,text,images,user,quote='',mentions=None):
 
 def choose(db,cfg,memory,job,task=None):
     target=job['target_group'];source=job['source_group']
+    if source!=target:raise ValueError('cross_group_conversation_forbidden')
     recent=db.execute('''SELECT e.text,e.images,e.created,e.message_id,j.user_id,j.trigger_reply,j.trigger_mentions
       FROM events e LEFT JOIN social_jobs j ON j.event_key=e.group_id||':'||e.message_id AND j.target_group=e.group_id
       WHERE e.group_id=? ORDER BY e.created DESC LIMIT ?''',(target,cfg.get('context_messages',100))).fetchall()
+    quarantined=db.execute('SELECT value FROM metrics WHERE key=?',('cross_group_bad_replies:'+str(target),)).fetchone()
+    bad_replies=set(json.loads(quarantined[0])) if quarantined else set()
     recent_views=[];budget=cfg.get('context_char_budget',24000)
     for row in recent:
+        if str(row['message_id']).removeprefix('bot:') in bad_replies:continue
         if budget<=0:break
         user='self' if row['message_id'].startswith('bot:') else row['user_id']
         view=message_view(db,memory,target,row['text'][:budget],len(json.loads(row['images'])),user,row['trigger_reply'] or '',json.loads(row['trigger_mentions'] or '[]'))
         view['message_id']=row['message_id'];view['time']=row['created']
         budget-=len(view['text']);recent_views.append(view)
-    candidates=db.execute("""SELECT c.id,c.source_group,c.text,c.images FROM candidates c
-      WHERE c.source_group!=? AND c.created>? AND c.text!='' AND c.status!='rejected'
-      AND NOT EXISTS (SELECT 1 FROM seen WHERE group_id=? AND fingerprint=c.fingerprint)
-      ORDER BY c.id DESC LIMIT 4""",(target,time.time()-1800,target)).fetchall()
-    material=[{'id':r['id'],'text':excerpt(r['text'],350),'images':len(json.loads(r['images']))} for r in candidates]
+    candidates=[];material=[]
     user=job['user_id'] if source==target else None
     recalled=task.session.recall(memory,user) if task else memory.retrieve(target,user,6000)
     query=job['trigger_text']+' '+' '.join(view['text'] for view in recent_views[:4])
@@ -222,7 +219,7 @@ def choose(db,cfg,memory,job,task=None):
              'relevant_older_windows':memory.recall_episodes(target,query),
              'pending_requests':request_queue.pending(db,target),'trigger':'本群有新消息' if source==target else '隔壁群有新消息，可考虑分享；当前群不活跃则保持安静',
              'candidates':material,
-             'forward_bundles':merged_forward.available(db,cfg,target),'outgoing_moments':merged_forward.outgoing(db,cfg,target) if source==target else []}
+             'forward_bundles':[],'outgoing_moments':merged_forward.outgoing(db,cfg,target) if source==target else []}
     if source==target and payload['pending_requests'] and payload['pending_requests'][0]['kind']=='forward':
         payload['outgoing_moments']=merged_forward.outgoing(db,cfg,target,before=payload['pending_requests'][0]['created'])
     previous_error=db.execute('SELECT value FROM metrics WHERE key=?',('state_update_error:'+str(target),)).fetchone()
@@ -232,6 +229,11 @@ def choose(db,cfg,memory,job,task=None):
         try:
             payload['relevant_archived_messages']=disk.search(target,query,before=time.time()-7200)
             payload['last_two_hours']=disk.window(target,time.time()-7200,limit=80,char_budget=8000)
+            original=payload['last_two_hours']['messages']
+            payload['last_two_hours']['messages']=[r for r in original if str(r['message_id']).removeprefix('bot:') not in bad_replies]
+            if len(original)!=len(payload['last_two_hours']['messages']):
+                payload['last_two_hours']['included_messages']=len(payload['last_two_hours']['messages']);payload['last_two_hours']['incomplete']=True
+            payload['relevant_archived_messages']=[r for r in payload['relevant_archived_messages'] if str(r.get('message_id','')).removeprefix('bot:') not in bad_replies]
         finally:disk.close()
     return payload,{r['id']:r for r in candidates}
 
@@ -239,7 +241,7 @@ def choose(db,cfg,memory,job,task=None):
 def pending_batch(db,job,interaction,now):
     limit=max(1,int(interaction.get('max_batch_messages',30)))
     budget=max(6000,int(interaction.get('batch_char_budget',12000)))
-    rows=db.execute("SELECT * FROM social_jobs WHERE status='pending' AND target_group=? AND created<=? ORDER BY created,event_key LIMIT ?",(job['target_group'],now,limit)).fetchall()
+    rows=db.execute("SELECT * FROM social_jobs WHERE status='pending' AND source_group=target_group AND target_group=? AND created<=? ORDER BY created,event_key LIMIT ?",(job['target_group'],now,limit)).fetchall()
     batch=[];used=0;images=0
     for row in rows:
         size=len(row['trigger_text'])
@@ -251,6 +253,8 @@ def pending_batch(db,job,interaction,now):
 
 def apply_decision(db,job,decision,candidates,cfg,now):
     target=job['target_group']
+    if decision['action']=='reply' and ('source_group' in job.keys() and job['source_group']!=target):
+        decision.update(action='wait',text='',reason='禁止把其他群消息当本群对话回复');return
     if decision['action']=='reply':
         original=decision.get('emoticon')
         selection=emoticons.safe_selection(cfg.get('context_dir',ROOT/'context'),target,original)
@@ -329,14 +333,9 @@ def tick(db,cfg,sessions=None):
             return
         now=time.time()
         request_queue.sync(db,cfg,now)
-        # Neighbor copies are optional sharing work. Never spend a model call
-        # deciding to stay silent in a target with no recent non-bot speaker.
-        for row in db.execute("SELECT DISTINCT target_group FROM social_jobs WHERE status='pending' AND source_group!=target_group").fetchall():
-            if not participants.humans_recent(db,row['target_group'],cfg,now):
-                with db:
-                    db.execute("UPDATE social_jobs SET status='inactive_target' WHERE target_group=? AND source_group!=target_group AND status='pending'",(row['target_group'],))
-                    if not db.execute("SELECT 1 FROM social_jobs WHERE target_group=? AND status='pending' LIMIT 1",(row['target_group'],)).fetchone():
-                        db.execute('DELETE FROM reaction_windows WHERE group_id=?',(row['target_group'],))
+        # Retire legacy mirrored jobs before they can enter a conversation batch.
+        with db:
+            db.execute("UPDATE social_jobs SET status='cross_group_trigger_retired' WHERE source_group!=target_group AND status IN ('pending','processing')")
         retry=db.execute("SELECT value FROM metrics WHERE key='model_retry_after'").fetchone()
         if retry and float(retry[0])>now:return
         # Reserve a call before network I/O. Failures also count against the local daily cap.
