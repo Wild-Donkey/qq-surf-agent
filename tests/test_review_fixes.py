@@ -50,3 +50,15 @@ class ReviewFixTests(unittest.TestCase):
   with db:db.execute('INSERT INTO events VALUES (?,?,?,?,?,?)',('1','new','f','new','[]',now))
   with patch('agent.onebot_call',return_value={'user_id':99}):self.assertEqual(workflow.dispatch(db,cfg,{},now),0)
   self.assertEqual(db.execute('SELECT status FROM deliveries').fetchone()[0],'superseded');db.close()
+
+ def test_safe_misplaced_fields_are_normalized_without_overriding(self):
+  raw={'call':{'name':'finish_turn','arguments':{'action':'reply','text':'好'}},'quality':'natural','group_state':{'summary':'聊天中'},'reason':'自然接话'}
+  result=social.validate_decision(json.dumps(raw))
+  self.assertEqual(result['action'],'reply');self.assertEqual(result['state_updates']['group_state']['summary'],'聊天中')
+  raw['action']='wait'
+  with self.assertRaises(social.ProtocolError):social.validate_decision(json.dumps(raw))
+ def test_api_shape_errors_use_short_protocol_backoff(self):
+  with self.assertRaises(social.ProtocolError) as caught:
+   social.validate_decision('{"call":{"name":"wait","arguments":{}},"unexpected":"private text"}')
+  self.assertEqual(caught.exception.code,'ambiguous_api_envelope')
+  self.assertNotIn('private text',json.dumps(caught.exception.details))

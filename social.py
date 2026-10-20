@@ -157,7 +157,19 @@ def generate_text(model,instructions,payload):
 
 
 def validate_decision(raw):
-    return application.decision(application.decode(raw))
+    try:return application.decision(application.decode(raw))
+    except ProtocolError:raise
+    except ValueError as exc:
+        # Protocol errors get brief retry backoff, never a global 60-second outage.
+        code=str(exc)
+        if not re.fullmatch(r'[a-z_]{1,80}',code):code='invalid_worker_api'
+        details={}
+        try:
+            parsed=json.loads(raw)
+            if isinstance(parsed,dict):
+                details['outer_keys']=[k for k in parsed if k in ('call','action','type','content','quality','reason','text','group_state','members','images','bundle_id','message_ids')]
+        except (ValueError,TypeError):pass
+        raise ProtocolError('worker_api',code,details) from None
 
 
 def message_view(db,memory,group,text,images,user,quote='',mentions=None):
@@ -407,7 +419,7 @@ def tick(db,cfg,sessions=None):
             if operator_paused or now-batch[-1]['created']>cfg.get('interaction',{}).get('max_reply_age_seconds',180):
                 decision=dict(decision,action='wait',text='',reason='已读，人工暂停或消息过旧，不补发回复')
             if not participants.humans_recent(db,job['target_group'],cfg):
-                decision=dict(decision,action='wait',text='',reason='过去五分钟没有确认的真人发言，保持安静')
+                decision=dict(decision,action='wait',text='',reason='过去五分钟没有非bot成员发言，保持安静')
             more=db.execute("SELECT 1 FROM social_jobs WHERE target_group=? AND status='pending' AND created<=? LIMIT 1",(job['target_group'],window['cutoff'])).fetchone()
             with db:
                 if more:

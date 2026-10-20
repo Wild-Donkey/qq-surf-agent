@@ -91,9 +91,9 @@ def humans_recent(db,group,cfg,now=None):
     settings=cfg.get('human_presence',{})
     if not settings.get('enabled',False):return True
     now=time.time() if now is None else now
-    # Unknown accounts do not establish human presence.
+    # Only known bots are excluded; unknown speakers count as present.
     row=db.execute('''SELECT max(e.created) FROM speaker_events e LEFT JOIN speaker_profiles p ON e.user_id=p.user_id
-      WHERE e.group_id=? AND p.kind='human' AND e.created<=?''',
+      WHERE e.group_id=? AND (p.kind IS NULL OR p.kind!='bot') AND e.created<=?''',
       (str(group),now)).fetchone()
     return bool(row and row[0] is not None and now-row[0]<settings.get('timeout_seconds',300))
 

@@ -18,6 +18,7 @@ TOOLS=[
  {'name':'merged_forward','description':'把隔壁群一段消息合并转发到当前目标群，参数 bundle_id、message_ids（按给定顺序至少2条）、quality=natural'},
  {'name':'forward','description':'转发当前群中某条消息（原生转发卡片），参数 message_id（取自 recent_target_messages）'},
  {'name':'wait','description':'保持安静，参数 reason'}]
+ARGUMENTS={'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id'},'search_history':{'query'},'list_emoticons':set(),'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'merged_forward':{'bundle_id','message_ids','quality'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id','bundle_id','message_ids'}}
 READS={'get_memory_schema','update_states','read_context','get_member','search_history','list_emoticons'}
 def decode(raw):
  value=parse_json(raw,'worker_api')
@@ -33,8 +34,9 @@ def decode(raw):
     value={'call':{'name':'finish_turn','arguments':{'action':value['type'],**{k:v for k,v in value.items() if k!='type'}}}}
   if isinstance(value.get('call'),dict) and isinstance(value['call'].get('arguments'),dict):
    args=dict(value['call']['arguments']);extra={k:v for k,v in value.items() if k!='call'}
-   # Only the historically misplaced quality field has an unambiguous meaning.
-   if set(extra)-{'quality'}:raise ValueError('ambiguous_api_envelope')
+   # Accept only fields exposed for this exact API; conflicting values remain errors.
+   exposed=ARGUMENTS.get(value['call'].get('name'),set())
+   if set(extra)-exposed:raise ValueError('ambiguous_api_envelope')
    if any(k in args and args[k]!=v for k,v in extra.items()):raise ValueError('conflicting_api_arguments')
    args.update(extra);value={'call':{**value['call'],'arguments':args}}
   break
@@ -44,7 +46,7 @@ def decode(raw):
  if call.get('name') not in {t['name'] for t in TOOLS}:raise ValueError('api_not_exposed')
  args=call.get('arguments',{})
  if not isinstance(args,dict):raise ValueError('invalid_api_arguments')
- name=call['name'];allowed={'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id'},'search_history':{'query'},'list_emoticons':set(),'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'merged_forward':{'bundle_id','message_ids','quality'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id','bundle_id','message_ids'}}[name]
+ name=call['name'];allowed=ARGUMENTS[name]
  if set(args)-allowed:raise ValueError('argument_not_exposed')
  if name in ('reply','share') and not isinstance(args.get('text',''),str):raise ValueError('invalid_text')
  return {'name':name,'arguments':args}
