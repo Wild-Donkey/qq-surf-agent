@@ -12,24 +12,28 @@ class ParticipantTests(unittest.TestCase):
     def observe(self,user,stamp):
         event={'group_id':1,'user_id':user,'message_id':str(user)+':'+str(stamp),'time':stamp}
         with self.db:participants.observe(self.db,event,self.cfg,'hello',stamp)
-    def test_bot_and_unknown_never_extend_human_window(self):
+    def test_only_confirmed_bot_does_not_extend_human_window(self):
+        # Unknown speakers are presumed present until proven bot; the model runs a Turing test on them.
         self.observe(7,1000);self.observe(8,1299);self.observe(9,1299)
         self.assertTrue(participants.humans_recent(self.db,'1',self.cfg,1299))
-        self.assertFalse(participants.humans_recent(self.db,'1',self.cfg,1300))
-        self.observe(8,1500)
-        self.assertFalse(participants.humans_recent(self.db,'1',self.cfg,1501))
-        self.observe(7,1502)
-        self.assertTrue(participants.humans_recent(self.db,'1',self.cfg,1502))
+        # User 7 (human) timed out, but user 9 (unknown) spoke at 1299 → gate stays open.
+        self.assertTrue(participants.humans_recent(self.db,'1',self.cfg,1300))
+        self.observe(8,1600)
+        # Bot 8 alone does not open the gate; user 7 at 1000 and user 9 at 1299 are both >300s ago by 1601.
+        self.assertFalse(participants.humans_recent(self.db,'1',self.cfg,1601))
+        self.observe(7,1602)
+        self.assertTrue(participants.humans_recent(self.db,'1',self.cfg,1602))
     def test_reclassification_invalidates_past_human_activity(self):
         self.observe(9,1000);batch=[{'user_id':'9'}]
         with self.db:participants.apply_judgments(self.db,{'speakers':[{'id':'9','kind':'human','confidence':0.9}]},batch,self.cfg,1001)
         self.assertTrue(participants.humans_recent(self.db,'1',self.cfg,1001))
         with self.db:participants.apply_judgments(self.db,{'speakers':[{'id':'9','kind':'bot','confidence':0.95}]},batch,self.cfg,1002)
         self.assertFalse(participants.humans_recent(self.db,'1',self.cfg,1002))
-    def test_unseen_ids_low_confidence_and_config_override_cannot_open_gate(self):
+    def test_unknown_opens_gate_while_unseen_ids_stay_unjudged(self):
         self.observe(8,1000);self.observe(9,1000)
         with self.db:participants.apply_judgments(self.db,{'speakers':[{'id':'8','kind':'human','confidence':1},{'id':'9','kind':'human','confidence':0.5},{'id':'123','kind':'human','confidence':1}]},[{'user_id':'8'},{'user_id':'9'}],self.cfg,1001)
-        self.assertFalse(participants.humans_recent(self.db,'1',self.cfg,1001))
+        # Known-bot 8 stays bot; unknown 9 opens the gate (presumed human until proven bot).
+        self.assertTrue(participants.humans_recent(self.db,'1',self.cfg,1001))
         self.assertFalse(self.db.execute("SELECT 1 FROM speaker_profiles WHERE user_id='123'").fetchone())
     def test_full_context_can_correct_a_silent_bot(self):
         self.observe(9,1000)

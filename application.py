@@ -4,7 +4,9 @@ from pathlib import Path
 from memory import MarkdownMemory,atomic_write,safe_id
 import archive,emoticons,participants
 from protocol import parse_json
+import memory_store
 TOOLS=[
+ {'name':'get_memory_schema','description':'读取群/成员状态与画像的规范字段，不接受任意字段'},
  {'name':'update_states','description':'提交群状态 group_state 和成员状态 members:[{user_id,state}]，应用校验后落盘'},
  {'name':'finish_turn','description':'一次提交状态并结束：group_state,members,action(wait/reply/share),text,candidate_id,emoticon,reason'},
  {'name':'read_context','description':'读取应用准备的当前群上下文，无参数'},
@@ -13,17 +15,27 @@ TOOLS=[
  {'name':'list_emoticons','description':'读取本群可用表情目录'},
  {'name':'reply','description':'回复当前群，参数 text 和可选 emoticon'},
  {'name':'share','description':'分享给定 candidate_id，参数 candidate_id,text'},
+ {'name':'forward','description':'转发当前群中某条消息（原生转发卡片），参数 message_id（取自 recent_target_messages）'},
  {'name':'wait','description':'保持安静，参数 reason'}]
-READS={'update_states','read_context','get_member','search_history','list_emoticons'}
+READS={'get_memory_schema','update_states','read_context','get_member','search_history','list_emoticons'}
 def decode(raw):
  value=parse_json(raw,'worker_api')
+ # Normalize simplified formats the model may emit when reasoning is off.
+ if isinstance(value,dict):
+  if 'action' in value and 'call' not in value:
+   value={'call':{'name':'finish_turn','arguments':value}}
+  elif value.get('type')=='json_object' and isinstance(value.get('content'),str):
+   try:value=parse_json(value['content'],'worker_api')
+   except Exception:pass
+  if isinstance(value,dict) and 'type' in value and 'call' not in value and 'action' not in value:
+   t=value.pop('type');value={'call':{'name':'finish_turn','arguments':{'action':t,**value}}}
  if not isinstance(value,dict) or set(value)-{'call'}:raise ValueError('worker_must_call_application_api')
  call=value.get('call')
  if not isinstance(call,dict) or set(call)-{'name','arguments'}:raise ValueError('invalid_api_call')
  if call.get('name') not in {t['name'] for t in TOOLS}:raise ValueError('api_not_exposed')
  args=call.get('arguments',{})
  if not isinstance(args,dict):raise ValueError('invalid_api_arguments')
- name=call['name'];allowed={'read_context':set(),'get_member':{'user_id'},'search_history':{'query'},'list_emoticons':set(),'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality'}}[name]
+ name=call['name'];allowed={'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id'},'search_history':{'query'},'list_emoticons':set(),'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id'}}[name]
  if set(args)-allowed:raise ValueError('argument_not_exposed')
  if name in ('reply','share') and not isinstance(args.get('text',''),str):raise ValueError('invalid_text')
  return {'name':name,'arguments':args}
@@ -35,13 +47,18 @@ def decision(call):
   if name=='finish_turn':result['state_updates']={k:args[k] for k in ('group_state','members','images') if k in args}
   return result
  if name=='finish_turn':
-  if args.get('action') not in ('wait','reply','share'):raise ValueError('invalid_finish_action')
+  if args.get('action') not in ('wait','reply','share','forward'):raise ValueError('invalid_finish_action')
   if not isinstance(args.get('text',''),str):raise ValueError('invalid_text')
-  return {'action':args['action'],'text':args.get('text','')[:180],'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'reason':str(args.get('reason',''))[:200],'state_updates':{k:args[k] for k in ('group_state','members','images') if k in args}}
+  return {'action':args['action'],'text':args.get('text','')[:180],'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'message_id':str(args.get('message_id','')) if args.get('message_id') else None,'reason':str(args.get('reason',''))[:200],'state_updates':{k:args[k] for k in ('group_state','members','images') if k in args}}
  if name in READS:return {'action':'read','call':call,'text':''}
+ if name=='forward':
+  mid=str(args.get('message_id',''))
+  if not mid:raise ValueError('forward_requires_message_id')
+  return {'action':'forward','text':'','message_id':mid,'emoticon':None,'reason':''}
  return {'action':name,'text':args.get('text','')[:180],'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'reason':str(args.get('reason',''))[:200]}
 def read(db,cfg,target,payload,call):
  name=call['name'];args=call['arguments']
+ if name=='get_memory_schema':return {k:memory_store.SCHEMA['$defs'][k] for k in ('FactInput','RelationInput','StateInput','GroupPortraitInput','PersonPortraitInput')}
  if name=='update_states':
   update_states(cfg,target,payload,args,db)
   return {'saved':True,'member_memories':member_context(cfg,target,payload),'group_state':group_state(cfg,target)}
@@ -54,6 +71,12 @@ def read(db,cfg,target,payload,call):
   row=db.execute('SELECT * FROM speaker_profiles WHERE user_id=?',(user,)).fetchone()
   result=dict(row) if row else {'user_id':user,'kind':'unknown'}
   result['memory']=member_markdown(cfg,target,user)
+  if memory_store.enabled(cfg['context_dir']):
+   store=memory_store.MemoryStore(cfg['context_dir'])
+   try:
+    doc=store.load('person',user);doc['groups']={target:doc['groups'][target]} if target in doc['groups'] else {}
+    result['structured_memory']=doc
+   finally:store.close()
   return result
  if name=='search_history':
   query=args.get('query','')
@@ -80,10 +103,11 @@ def member_markdown(cfg,group,user):
     path=Path(cfg['context_dir'])/'people'/safe_id(user)/'people.md'
     if not path.exists():return ''
     text=path.read_text()
-    # Group-specific state from other groups is never injected into this worker.
+    # Group-specific sections from other groups are never injected into this worker.
     def keep(match):return match[0] if match[1]==str(group) else ''
     text=re.sub(r'<!-- group-state:(\d+):start -->.*?<!-- group-state:\1:end -->',keep,text,flags=re.S)
-    return re.sub(r'<!-- group-portrait:(\d+):start -->.*?<!-- group-portrait:\1:end -->',keep,text,flags=re.S)
+    text=re.sub(r'<!-- group-portrait:(\d+):start -->.*?<!-- group-portrait:\1:end -->',keep,text,flags=re.S)
+    return re.sub(r'<!-- group-scope:(\d+):start -->.*?<!-- group-scope:\1:end -->',keep,text,flags=re.S)
 
 
 def group_portrait(cfg,group):
@@ -98,7 +122,7 @@ def member_context(cfg,group,payload,budget=24000):
     for index,profile in enumerate(profiles):
         user=str(profile['id']);full=member_markdown(cfg,group,user)
         priority=[]
-        for label in ('group-portrait:'+str(group),'group-state:'+str(group),'account-kind'):
+        for label in ('person-portrait','person-state','account-kind','group-scope:'+str(group),'group-portrait:'+str(group),'group-state:'+str(group)):
             match=re.search(re.escape('<!-- '+label+':start -->')+'.*?'+re.escape('<!-- '+label+':end -->'),full,flags=re.S)
             if match:priority.append(match[0]);full=full.replace(match[0],'')
         full='\n'.join(priority)+'\n'+full
@@ -117,17 +141,27 @@ def update_states(cfg,group,payload,args,db=None):
         if not isinstance(image,dict) or set(image)!={'reference','description'} or image['reference'] not in available:raise ValueError('image_not_attached')
         if not isinstance(image['description'],str) or len(image['description'])>1200:raise ValueError('invalid_image_description')
     if not isinstance(members,list) or len(members)>60:raise ValueError('invalid_member_states')
-    if state is not None and (not isinstance(state,str) or len(state)>2800):raise ValueError('invalid_group_state')
+    if state is not None:memory_store.input_patch(state,'StateInput')
     # Validate the entire request before writing any file.
+    seen_users=set()
     for item in members:
-        if not isinstance(item,dict) or not {'user_id','state'}<=set(item) or set(item)-{'user_id','state','account_kind','confidence','reason','evidence_keys'} or str(item['user_id']) not in allowed:raise ValueError('member_outside_context')
-        if not isinstance(item['state'],str) or len(item['state'])>3000:raise ValueError('invalid_member_state')
+        if not isinstance(item,dict) or not {'user_id','state'}<=set(item) or set(item)-{'user_id','state','account_kind','confidence','reason','evidence_keys','scope'} or str(item['user_id']) not in allowed:raise ValueError('member_outside_context')
+        if str(item['user_id']) in seen_users:raise ValueError('duplicate_member_state')
+        seen_users.add(str(item['user_id']))
+        if item.get('scope','person') not in ('person','group'):raise ValueError('invalid_member_scope')
+        memory_store.input_patch(item['state'],'StateInput')
         if 'account_kind' in item:
             if db is None or item['account_kind'] not in ('human','bot','unknown'):raise ValueError('invalid_account_kind')
             confidence=item.get('confidence');keys=item.get('evidence_keys',[])
             if isinstance(confidence,bool) or not isinstance(confidence,(float,int)) or not 0<=confidence<=1 or not isinstance(keys,list) or not 1<=len(keys)<=20:raise ValueError('invalid_account_evidence')
             for key in keys:
                 if not isinstance(key,str) or not db.execute('SELECT 1 FROM speaker_events WHERE event_key=? AND group_id=? AND user_id=?',(key,str(group),str(item['user_id']))).fetchone():raise ValueError('unverified_account_evidence')
+    if memory_store.enabled(cfg['context_dir']) or isinstance(state,dict) or any(isinstance(item['state'],dict) for item in members):
+        store=memory_store.MemoryStore(cfg['context_dir'])
+        try:
+            if state is not None:store.verify_evidence(group,memory_store.input_patch(state,'StateInput'))
+            for item in members:store.verify_evidence(group if item.get('scope')=='group' else None,memory_store.input_patch(item['state'],'StateInput'))
+        finally:store.close()
     if db is not None:
         with db:
             for item in members:
@@ -141,6 +175,11 @@ def update_states(cfg,group,payload,args,db=None):
         meta=available[image['reference']]
         if meta.get('event_key'):archive.record_visual(cfg,meta['event_key'],image['description'],meta.get('media_key',''))
         if meta.get('media_key'):emoticons.learn(cfg['context_dir'],meta['group_id'],meta['url'],image['description'],meta['media_key'])
+    if memory_store.enabled(cfg['context_dir']) or isinstance(state,dict) or any(isinstance(item['state'],dict) for item in members):
+        store=memory_store.MemoryStore(cfg['context_dir'])
+        try:store.state_updates(group,state,[(str(item['user_id']),item['state'],item.get('scope','person')) for item in members])
+        finally:store.close()
+        return
     for item in members:
         user=str(item['user_id']);path=Path(cfg['context_dir'])/'people'/safe_id(user)/'people.md'
         old=path.read_text() if path.exists() else '# 成员记忆\n'

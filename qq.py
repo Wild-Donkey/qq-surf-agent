@@ -68,7 +68,7 @@ def shell(db,cfg,api,initial):
     print('QQ 抢话终端：直接输入即发送；/use 群名、/groups、/pause 分钟、/resume、/quit。')
     while True:
         try:
-            text=input('石头@'+group['name']+'> ').strip()
+            text=input('Luna@'+group['name']+'> ').strip()
             if not text:continue
             if text=='/quit':return
             if text=='/groups':

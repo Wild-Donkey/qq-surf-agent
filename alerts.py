@@ -44,7 +44,7 @@ def flush(db,cfg,api_cfg,now=None):
     try:
         login=agent.onebot_call(api_cfg,'get_login_info')
         if str(login.get('user_id'))!=str(cfg['bot_id']):raise ValueError('Wrong bot account')
-        text=('🪨 bot 用量报告\n'+row['summary']) if row['code']=='usage_report' else ('🪨 '+row['summary']+'\n'+row['code'])
+        text=('bot 用量报告\n'+row['summary']) if row['code']=='usage_report' else (''+row['summary']+'\n'+row['code'])
         result=agent.onebot_call(api_cfg,'send_private_msg',{'user_id':int(owner),'message':[{'type':'text','data':{'text':text}}]})
         with db:db.execute("UPDATE alerts SET status='sent',message_id=?,notify_after=? WHERE id=?",(str(result['message_id']),now+cfg.get('alerts',{}).get('cooldown_seconds',1800),row['id']))
         return 1

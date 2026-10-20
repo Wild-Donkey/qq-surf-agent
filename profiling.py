@@ -3,6 +3,7 @@ import json,time,hashlib
 from pathlib import Path
 from memory import atomic_write,safe_id
 import archive,agent,model_gate
+import memory_store
 from protocol import parse_json
 
 GROUP_MAP='record_profile_notes'
@@ -46,6 +47,17 @@ def snapshot(cfg,group):
   return result
  finally:disk.close()
 
+def snapshot_person(cfg,user):
+ disk=archive.Archive(cfg['context_dir']);settings=cfg.get('profiling',{});since=time.time()-settings.get('history_days',30)*86400
+ try:
+  rows=disk.db.execute('SELECT * FROM messages WHERE user_id=? AND created>=? ORDER BY created DESC LIMIT ?',(str(user),since,settings.get('max_messages',5000))).fetchall()
+  result=[]
+  for row in reversed(rows):
+   notes=[r[0] for r in disk.db.execute('SELECT description FROM visual_notes WHERE group_id=? AND message_id=?',(row['group_id'],row['message_id']))]
+   result.append({'event_key':row['group_id']+':'+row['message_id'],'speaker':row['user_id'],'nickname':row['nickname'],'time':row['created'],'text':row['text'],'mentions':json.loads(row['mentions']),'image_count':len(json.loads(row['images'])),'visual_notes':notes})
+  return result
+ finally:disk.close()
+
 def fetch_page(db,cfg,api,group,state):
  settings=cfg.get('profiling',{});request={'group_id':int(group),'count':settings.get('page_size',200),'disable_get_url':True,'parse_mult_msg':False,'reverse_order':False}
  if state.get('cursor'):request['message_seq']=state['cursor']
@@ -72,7 +84,12 @@ def fetch_page(db,cfg,api,group,state):
   else:state['phase']='empty'
  save(db,cfg,group,state,'empty' if state['phase']=='empty' else 'running')
 
-def write_portrait(cfg,group,markdown,member=None):
+def write_portrait(cfg,group,markdown,member=None,sample_coverage=None):
+ if cfg.get('memory_schema',{}).get('enabled'):
+  store=memory_store.MemoryStore(cfg['context_dir'])
+  try:store.portrait(group,markdown,member,sample_coverage)
+  finally:store.close()
+  return
  if member:
   path=Path(cfg['context_dir'])/'people'/safe_id(member)/'people.md';label='group-portrait:'+str(group)
  else:path=Path(cfg['context_dir'])/'groups'/safe_id(group)/'group.md';label='portrait'
@@ -89,7 +106,7 @@ def prompt(operation):
 先理解整个样本中的话题、人际互动、群内称呼、群规、风格、经常讨论的事情、尚未解决的问题及对bot的接受程度，再写有依据的画像。不得把bot的发言当全群意见，不把玩笑当事实，不推断现实身份或敏感属性。每项关键判断注明可追溯的event_key，缺少证据就明确未知。保留相互矛盾的观察，不要把一时话题写成永久偏好。只有视觉观察明确给出的图片才算看过，其余仅知道发过图。
 record_profile_notes：完整读当前分块，提取群与各发言者的事实、关系和依据，最多2200字。
 publish_group_profile：综合全部分块记录，写群画像Markdown，包含样本覆盖、群内文化与话题、聊天方式与互动关系、明确约定、当前与长期事项、已知bot及依据、未知与冲突，最多6000字。
-publish_member_profile：以已经写好的群画像为背景，结合该成员所有分块或原话，写这个人在本群的画像Markdown，包含群内称呼、发言风格、反复出现的话题/偏好、与他人的互动、明确意愿/边界、当前事项、身份判断的证据与不确定性；只描述目标ID，不把其他人的话算给他，最多4000字。不要用几条随机摘录代替综合判断。'''
+publish_member_profile：以已经写好的群画像为参考背景，结合该账号跨群的全部个人样本，写这个人本身的画像Markdown，包含群内称呼、发言风格、反复出现的话题/偏好、与他人的互动、明确意愿/边界、当前事项、身份判断的证据与不确定性；不要按群号分章节，不把某群特例推广成个人普遍特征；只描述目标ID，不把其他人的话算给他，最多4000字。不要用几条随机摘录代替综合判断。'''
 
 def infer(db,cfg,operation,payload,invoke=None):
  if invoke:return invoke(operation,payload)
@@ -97,11 +114,22 @@ def infer(db,cfg,operation,payload,invoke=None):
  slot=model_gate.reserve(db,cfg,background=True)
  if slot is None:return None
  try:
-  raw,usage=social.generate_text(social.load_model(cfg),prompt(operation),payload);value=parse_json(raw,'profile_api')
+  model=dict(social.load_model(cfg));model['_text_format']={'type':'json_object'}
+  instructions=prompt(operation)
+  structured=cfg.get('memory_schema',{}).get('enabled') and operation in (GROUP_FINAL,MEMBER_FINAL)
+  if structured:
+   definition='GroupPortraitInput' if operation==GROUP_FINAL else 'PersonPortraitInput'
+   payload['schema']={'$defs':{key:memory_store.SCHEMA['$defs'][key] for key in ('FactInput','RelationInput',definition)},'$ref':'#/$defs/'+definition}
+   instructions+='\n本次必须使用结构化画像接口：arguments唯一字段为profile，值为符合给定schema的对象，所有字段都要提供，不知道的数组用[]。不返回text或Markdown；事实附完整event_key证据，置信度反映支持程度，不能用高置信度无证据断言。'
+  raw,usage=social.generate_text(model,instructions,payload);value=parse_json(raw,'profile_api')
   call=value.get('call',{});args=call.get('arguments',{})
-  if set(value)!={'call'} or call.get('name')!=operation or not isinstance(args.get('text'),str):raise ValueError('invalid_profile_api_call')
-  text=args['text'];limit=2200 if operation==GROUP_MAP else 6000 if operation==GROUP_FINAL else 4000
-  if not text.strip() or len(text)>limit:raise ValueError('invalid_profile_size')
+  if set(value)!={'call'} or call.get('name')!=operation:raise ValueError('invalid_profile_api_call')
+  if structured:
+   if set(args)!={'profile'}:raise ValueError('invalid_profile_api_arguments')
+   memory_store.validate(args['profile'],memory_store.SCHEMA['$defs'][definition]);text=args['profile']
+  else:text=args.get('text')
+  limit=2200 if operation==GROUP_MAP else 6000 if operation==GROUP_FINAL else 4000
+  if not structured and (not isinstance(text,str) or not text.strip() or len(text)>limit):raise ValueError('invalid_profile_size')
   with db:db.execute("UPDATE model_calls SET status='ok',input_tokens=?,output_tokens=? WHERE id=?",(usage.get('prompt_tokens',0),usage.get('completion_tokens',0),slot))
   return text
  except Exception as exc:
@@ -128,12 +156,16 @@ def tick(db,cfg,api,invoke=None):
   text=infer(db,cfg,GROUP_FINAL,{'coverage':coverage,'all_chunk_notes':state['group_notes']},invoke)
   if text is None:return False
   header='## 群画像：批量历史蒸馏\n\n覆盖 '+str(state['total'])+' 条可见记录；'+str(len(state['group_chunks']))+' 个分块均已读取。范围 '+json.dumps(state.get('range',{}))+'。\n'
-  write_portrait(cfg,group,header+text)
+  sample_coverage={'message_count':state['total'],'time_start':state.get('range',{}).get('first'),'time_end':state.get('range',{}).get('last'),'complete':True,'note':'全部可见取样分块已读取；QQ不可见历史不在覆盖范围'}
+  write_portrait(cfg,group,text if isinstance(text,dict) else header+text,sample_coverage=sample_coverage)
   state['group_profile']=text
   by_user={}
   for row in state['messages']:
    if row['speaker'].isdigit():by_user.setdefault(row['speaker'],[]).append(row)
-  state['members']=[{'id':user,'chunks':chunks(rows),'notes':[],'index':0,'count':len(rows)} for user,rows in sorted(by_user.items(),key=lambda pair:(-len(pair[1]),pair[0]))]
+  state['members']=[]
+  for user,rows in sorted(by_user.items(),key=lambda pair:(-len(pair[1]),pair[0])):
+   if cfg.get('memory_schema',{}).get('enabled'):rows=snapshot_person(cfg,user) or rows
+   state['members'].append({'id':user,'chunks':chunks(rows),'notes':[],'index':0,'count':len(rows)})
   state['member_index']=0;state['phase']='members'
  elif phase=='members':
   index=state['member_index']
@@ -149,7 +181,9 @@ def tick(db,cfg,api,invoke=None):
    text=infer(db,cfg,MEMBER_FINAL,payload,invoke)
    if text is None:return False
    header='## 本群画像 '+group+'\n\n基于该群整体画像及本成员 '+str(member['count'])+' 条记录；'+str(len(parts))+' 个分块均已读取。\n'
-   write_portrait(cfg,group,header+text,member['id']);state['member_index']+=1
+   own_rows=[r for part in parts for r in part]
+   sample_coverage={'message_count':member['count'],'time_start':min(r['time'] for r in own_rows),'time_end':max(r['time'] for r in own_rows),'complete':True,'note':'该成员在取样中的全部分块已读取'}
+   write_portrait(cfg,group,text if isinstance(text,dict) else header+text,member['id'],sample_coverage);state['member_index']+=1
   if state['member_index']>=len(state['members']):state['phase']='done'
  save(db,cfg,group,state,'done' if state['phase']=='done' else 'running')
  return True

@@ -192,7 +192,7 @@ def export(db, path):
         cards.append('<article><small>#{id} · {status} · {source}</small><h2>{title}</h2><p>{caption}</p>{media}</article>'.format(
             **{k: html.escape(str(row[k])) for k in ('id', 'status', 'source', 'title')},
             caption=html.escape(row['caption']).replace('\n', '<br>'), media=media))
-    path.write_text('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>冲浪收件箱</title><style>body{background:#f3f3ed;color:#202821;font:16px system-ui;max-width:850px;margin:50px auto;padding:20px}h1{font-size:40px}article{background:white;padding:24px;border-radius:16px;margin:16px 0}small{color:#647766}p{line-height:1.7;overflow-wrap:anywhere}</style><h1>🪨 冲浪收件箱</h1><p>候选内容在本地排队。pending 待审核 · approved 可发送 · sent 已发送 · uncertain 发送结果待核实。</p>' + ''.join(cards) + '</html>', encoding='utf-8')
+    path.write_text('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>冲浪收件箱</title><style>body{background:#f3f3ed;color:#202821;font:16px system-ui;max-width:850px;margin:50px auto;padding:20px}h1{font-size:40px}article{background:white;padding:24px;border-radius:16px;margin:16px 0}small{color:#647766}p{line-height:1.7;overflow-wrap:anywhere}</style><h1>冲浪收件箱</h1><p>候选内容在本地排队。pending 待审核 · approved 可发送 · sent 已发送 · uncertain 发送结果待核实。</p>' + ''.join(cards) + '</html>', encoding='utf-8')
     print('预览已更新：' + str(path))
 
 
@@ -246,7 +246,7 @@ def send(db, cfg):
 
 
 def onebot_call(cfg, action, payload=None):
-    allowed = {'get_status', 'get_login_info', 'get_group_list', 'get_group_member_list', 'get_friend_list', 'get_group_msg_history', 'send_group_msg', 'send_private_msg'}
+    allowed = {'get_image', 'get_msg', 'get_status', 'get_login_info', 'get_group_list', 'get_group_member_list', 'get_friend_list', 'get_group_msg_history', 'send_group_msg', 'send_private_msg', 'send_group_forward_msg', 'set_group_add_request'}
     if action not in allowed:
         raise ValueError('不支持此 OneBot 操作')
     sender = cfg.get('sender', {})

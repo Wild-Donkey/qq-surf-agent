@@ -72,5 +72,9 @@
     "max_messages": 5000,
     "page_size": 200,
     "max_pages": 50
+  },
+  "memory_schema": {
+    "enabled": true,
+    "version": 1
   }
 }

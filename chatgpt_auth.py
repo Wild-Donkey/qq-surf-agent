@@ -184,11 +184,12 @@ def login(port=8768, new=False):
     server.serve_forever()
 
 
-def infer(model, instructions, payload, image_inputs=None):
+def infer(model, instructions, payload, image_inputs=None,text_format=None):
     content=json.dumps(payload,ensure_ascii=False)
     if image_inputs:content=[{'type':'input_text','text':content}]+image_inputs
     body={'model':model, 'instructions':instructions,
           'input':[{'role':'user','content':content}], 'store':False,'stream':True}
+    if text_format:body['text']={'format':text_format}
     req=urllib.request.Request(RESOURCE+'/responses',data=json.dumps(body).encode(),
         headers={'Authorization':'Bearer '+access_token(),'Content-Type':'application/json','Accept':'text/event-stream'})
     completed=None; event=[];messages={}

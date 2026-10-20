@@ -28,7 +28,7 @@ from memory import MarkdownMemory
 from sessions import SessionPool
 
 ROOT = Path(__file__).resolve().parent
-MARK = '🪨 群间搬运｜'
+MARK = '群间搬运｜'
 
 
 def connect(path):
@@ -156,8 +156,64 @@ def context(db, group, cfg):
             'summary': json.loads(memory_row['summary']) if memory_row else {}, 'recent': list(reversed(recent))}
 
 
-def ingest(db, event, cfg, now=None):
+def _register_and_backfill_group(db, group_id, cfg, api_cfg, now):
+    """Add a newly joined group to config and ingest its recent messages so the bot can reply."""
+    if not group_id or not group_id.isdigit():
+        return
+    configured = configured_groups(cfg)
+    if group_id not in configured:
+        try:
+            path = ROOT / 'workflow.json'
+            current = json.loads(path.read_text())
+            if not any(str(g.get('id')) == group_id for g in current.get('groups', [])):
+                new_group = {'id': group_id, 'name': group_id, 'enabled': True, 'preference': cfg.get('default_group_preference', '有趣的图文和链接；避免搬运日常对话片段')}
+                current['groups'].append(new_group)
+                path.write_text(json.dumps(current, ensure_ascii=False, indent=2) + '\n')
+                # Update in-memory cfg so subsequent ingest calls in this tick see the new group.
+                cfg.setdefault('groups', []).append(new_group)
+                alerts.record(db, 'group_auto_registered', '新群已自动加入配置。', scope=group_id, details={'group_id': group_id})
+                # Mark for onboarding so the bot introduces itself after scanning.
+                db.execute('CREATE TABLE IF NOT EXISTS group_onboarding(group_id TEXT PRIMARY KEY,created REAL,status TEXT,new_group INTEGER,intro_candidate INTEGER,retry_after REAL DEFAULT 0)')
+                db.execute('INSERT OR IGNORE INTO group_onboarding(group_id,created,status,new_group) VALUES (?,?,?,?)',(group_id,now,'pending',1))
+        except Exception as exc:
+            alerts.record(db, 'group_register_failed', '新群写入配置失败。', scope=group_id, details={'error': type(exc).__name__})
+            return
+    # Backfill recent messages; only recent ones go through the social pipeline.
+    try:
+        history = agent.onebot_call(api_cfg, 'get_group_msg_history', {'group_id': int(group_id), 'count': 100, 'disable_get_url': True})
+        max_age = cfg.get('max_event_age_seconds', 300)
+        count = 0
+        for event in history.get('messages', []):
+            event = dict(event, post_type='message', message_type='group', group_id=group_id)
+            stamp = float(event.get('time', now))
+            if now - stamp > max_age:
+                continue
+            if ingest(db, event, cfg, now, api_cfg) == 'candidate':
+                count += 1
+        if count:
+            alerts.record(db, 'group_backfilled', '新群已回溯 {} 条近期消息。'.format(count), scope=group_id, details={'group_id': group_id, 'count': count})
+    except Exception as exc:
+        alerts.record(db, 'group_backfill_failed', '新群回溯消息失败。', scope=group_id, details={'error': type(exc).__name__, 'group_id': group_id})
+
+
+def ingest(db, event, cfg, now=None, api_cfg=None):
     now = time.time() if now is None else now
+    # Auto-accept group invitations directed at this bot (not member apply requests).
+    if event.get('post_type') == 'request' and event.get('request_type') == 'group':
+        sub = event.get('sub_type')
+        if sub == 'invite' and cfg.get('auto_accept_group_invite', False) and api_cfg is not None:
+            flag = event.get('flag')
+            if flag:
+                try:
+                    agent.onebot_call(api_cfg, 'set_group_add_request', {'flag': flag, 'sub_type': 'invite', 'approve': True})
+                    alerts.record(db, 'group_invite_accepted', '已自动接受进群邀请。', scope=str(event.get('group_id','')), details={'group_id': event.get('group_id'), 'user_id': event.get('user_id')})
+                    # Immediately register the new group and backfill recent messages so the bot can reply.
+                    _register_and_backfill_group(db, str(event.get('group_id','')), cfg, api_cfg, now)
+                    return 'invite_accepted'
+                except Exception as exc:
+                    alerts.record(db, 'group_invite_failed', '自动接受进群邀请失败。', scope=str(event.get('group_id','')), details={'error': type(exc).__name__, 'group_id': event.get('group_id')})
+                    return 'invite_failed'
+        return 'ignored_request'
     groups = configured_groups(cfg)
     source = str(event.get('group_id', ''))
     if event.get('post_type') != 'message' or event.get('message_type') != 'group' or source not in groups:
@@ -258,7 +314,9 @@ def dispatch(db, cfg, api_cfg, now=None):
             except Exception as exc:
                 alerts.record(db,'refresh_before_send_failed','发送前刷新群消息失败，暂不发旧草稿。',details={'stage':'get_group_msg_history','error':type(exc).__name__,'retcode':getattr(exc,'retcode',None)})
                 continue
-        if not job['deadline_reply'] and newer_context(db,target,job['context_watermark']):
+        # After max_hold_seconds, force-send even if newer context arrived (conversation moved on).
+        max_hold = cfg.get('max_hold_seconds', 20)
+        if not job['deadline_reply'] and (now - job['created']) < max_hold and newer_context(db,target,job['context_watermark']):
             with db:db.execute("UPDATE deliveries SET status='superseded',updated=? WHERE id=?",(now,job['id']))
             continue
         paused=db.execute('SELECT until_time FROM operator_pause WHERE group_id=?',(target,)).fetchone()
@@ -288,6 +346,18 @@ def dispatch(db, cfg, api_cfg, now=None):
             db.rollback()
             continue
         db.commit()
+        if job['kind']=='forward':
+            mid=str(job['text']).strip()
+            try:
+                result=agent.onebot_call(api_cfg,'send_group_forward_msg',{'group_id':int(target),'messages':[{'type':'node','data':{'id':mid}}]})
+                with db:
+                    db.execute("UPDATE deliveries SET status='sent',message_id=?,updated=? WHERE id=?",(str(result.get('message_id','')),now,job['id']))
+                    db.execute('INSERT OR IGNORE INTO seen VALUES (?,?,?)',(target,job['fingerprint'],now))
+                continue
+            except Exception as exc:
+                with db:db.execute("UPDATE deliveries SET status='failed',updated=?,error=? WHERE id=?",(now,type(exc).__name__,job['id']))
+                alerts.record(db,'forward_failed','转发消息失败。',scope=target,details={'message_id':mid,'error':type(exc).__name__,'retcode':getattr(exc,'retcode',None)})
+                continue
         source = groups[job['source_group']]['name']
         text=job['text'] if job['kind']=='reply' else MARK+source+'\n'+(job['caption'] or job['text'])
         parts = [{'type':'text','data':{'text':text}}] if text else []
@@ -295,7 +365,7 @@ def dispatch(db, cfg, api_cfg, now=None):
         if cfg.get('send_images', True):
             parts.extend({'type':'image','data':{'file':image['url']}} for image in json.loads(job['images']))
         try:
-            if not job['deadline_reply'] and newer_context(db,target,job['context_watermark']):
+            if not job['deadline_reply'] and (now - job['created']) < max_hold and newer_context(db,target,job['context_watermark']):
                 with db:db.execute("UPDATE deliveries SET status='superseded',updated=? WHERE id=?",(time.time(),job['id']))
                 continue
             if not participants.humans_recent(db,target,cfg):
@@ -339,14 +409,15 @@ def export_inbox(db,cfg,path):
         media=''.join('<p><a rel="noreferrer" target="_blank" href="{}">查看素材图片</a></p>'.format(html.escape(i['url'],quote=True)) for i in json.loads(row['images']))
         cards.append('<article><small>#{id} · {status} · 来自 {source}</small><p>{text}</p>{media}<details><summary>目标群与投递状态</summary><p>{targets}</p></details></article>'.format(id=row['id'],status=html.escape(row['status']),source=html.escape(source),text=html.escape(row['text']).replace('\n','<br>'),media=media,targets=html.escape(targets)))
     counts={row[0]:row[1] for row in db.execute('SELECT status,count(*) FROM deliveries GROUP BY status')}
-    page='<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>群间冲浪工作流</title><style>body{background:#f3f3ed;color:#202821;font:16px system-ui;max-width:900px;margin:40px auto;padding:20px}article{background:white;padding:24px;border-radius:16px;margin:18px 0}p{line-height:1.7;overflow-wrap:anywhere}small{color:#536654}h1{font-size:38px}</style><h1>🪨 群间冲浪工作流</h1><p>监听 '+str(len(groups))+' 个群 · '+html.escape(cfg.get('mode','preview'))+' 模式</p><p>最近讨论 → 图文候选 → 审核 → 跨群去重 → 限速投递</p><p>'+html.escape(json.dumps(counts,ensure_ascii=False))+'</p>'+(''.join(cards) or '<article>等待新的图文或链接消息。普通闲聊仅用于本机上下文。</article>')
+    page='<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>群间冲浪工作流</title><style>body{background:#f3f3ed;color:#202821;font:16px system-ui;max-width:900px;margin:40px auto;padding:20px}article{background:white;padding:24px;border-radius:16px;margin:18px 0}p{line-height:1.7;overflow-wrap:anywhere}small{color:#536654}h1{font-size:38px}</style><h1>群间冲浪工作流</h1><p>监听 '+str(len(groups))+' 个群 · '+html.escape(cfg.get('mode','preview'))+' 模式</p><p>最近讨论 → 图文候选 → 审核 → 跨群去重 → 限速投递</p><p>'+html.escape(json.dumps(counts,ensure_ascii=False))+'</p>'+(''.join(cards) or '<article>等待新的图文或链接消息。普通闲聊仅用于本机上下文。</article>')
     temp=path.with_suffix('.tmp')
     temp.write_text(page,encoding='utf-8');temp.replace(path)
 
 
-def handler(db_path, cfg, secret):
+def handler(db_path, cfg, secret, api_loader=None):
     config_source=cfg
     def current_config(): return config_source() if callable(config_source) else config_source
+    def current_api(): return api_loader() if callable(api_loader) else (api_loader if api_loader else None)
     class Handler(BaseHTTPRequestHandler):
         def log_message(self,*args): pass
         def do_GET(self):
@@ -389,8 +460,14 @@ def handler(db_path, cfg, secret):
                     self.send_error(403); return
                 event=json.loads(body)
                 if not isinstance(event,dict): raise ValueError()
+                # DEBUG: log all incoming events to capture invite/private message shapes
+                try:
+                    with open(ROOT/'runtime'/'raw_events.log','a') as _f:
+                        _f.write(json.dumps(event,ensure_ascii=False)[:2000]+'\n')
+                except Exception:
+                    pass
                 with closing(connect(db_path)) as db:
-                    result=ingest(db,event,current_config())
+                    result=ingest(db,event,current_config(),api_cfg=current_api())
                     db.execute('INSERT OR REPLACE INTO metrics VALUES (?,?)',('last_event',str(time.time())))
                     db.commit()
                 self.send_response(200); self.end_headers(); self.wfile.write(b'{}')
@@ -430,12 +507,16 @@ def main():
             secret=agent.sender_token(api_cfg['sender'])
             if not secret: raise ValueError('缺少事件签名密钥')
             def current_config(): return json.loads(args.config.read_text())
-            server=ThreadingHTTPServer(('127.0.0.1',cfg.get('port',8766)),handler(db_path,current_config,secret))
+            def current_api(): return json.loads((ROOT/'config.json').read_text())
+            server=ThreadingHTTPServer(('127.0.0.1',cfg.get('port',8766)),handler(db_path,current_config,secret,current_api))
             server.daemon_threads=True
             stop=threading.Event()
             def stopped(*_): stop.set()
             signal.signal(signal.SIGTERM,stopped); signal.signal(signal.SIGINT,stopped)
             thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+            if cfg.get('memory_schema',{}).get('enabled',False):
+                import memory_store
+                memory_store.migrate(cfg['context_dir'],cfg['groups'],[dict(row) for row in db.execute('SELECT * FROM speaker_profiles')])
             with db:db.execute("UPDATE social_jobs SET status='pending' WHERE status='processing'")
             participants.reconcile_archive(db,cfg)
             participants.sync_config(db,cfg)

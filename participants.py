@@ -91,10 +91,10 @@ def humans_recent(db,group,cfg,now=None):
     settings=cfg.get('human_presence',{})
     if not settings.get('enabled',False):return True
     now=time.time() if now is None else now
-    # Join against current verdicts: reclassifying an account immediately invalidates its old "human" activity.
-    row=db.execute('''SELECT max(e.created) FROM speaker_events e JOIN speaker_profiles p ON e.user_id=p.user_id
-      WHERE e.group_id=? AND p.kind='human' AND p.confidence>=? AND e.created<=?''',
-      (str(group),settings.get('confidence_threshold',0.85),now)).fetchone()
+    # A confirmed bot is never human; everyone else (human or not-yet-judged) counts as present.
+    row=db.execute('''SELECT max(e.created) FROM speaker_events e LEFT JOIN speaker_profiles p ON e.user_id=p.user_id
+      WHERE e.group_id=? AND (p.kind IS NULL OR p.kind!='bot') AND e.created<=?''',
+      (str(group),now)).fetchone()
     return bool(row and row[0] is not None and now-row[0]<settings.get('timeout_seconds',300))
 
 
@@ -107,6 +107,12 @@ def flush_profiles(db,root,batch):
     for user in {str(row['user_id']) for row in batch}:
         row=db.execute('SELECT * FROM speaker_profiles WHERE user_id=?',(user,)).fetchone()
         if not row:continue
+        if (Path(root)/'structured_memory.sqlite3').exists():
+            from memory_store import MemoryStore
+            store=MemoryStore(root)
+            try:store.account(user,dict(row))
+            finally:store.close()
+            continue
         path=Path(root)/'people'/safe_id(user)/'people.md'
         start='<!-- account-kind:start -->';end='<!-- account-kind:end -->'
         block=start+'\n## 账号类型判断\n\n来源 '+row['source']+'；'+row['kind']+'；置信度 '+str(row['confidence'])+'；依据：'+row['reason'].replace('<!--','&lt;!--')+'。这只是当前判断，可被后续证据修正。\n'+end
