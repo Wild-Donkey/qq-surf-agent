@@ -33,7 +33,10 @@ class OnboardingTests(unittest.TestCase):
         with patch('social.load_model',return_value=model):
             onboarding.greet(self.db,self.cfg,self.now);onboarding.greet(self.db,self.cfg,self.now+1)
         self.assertEqual(self.db.execute('SELECT count(*) FROM deliveries').fetchone()[0],1)
-        self.assertIn('chosen',self.db.execute('SELECT text FROM candidates').fetchone()[0])
+        text=self.db.execute('SELECT text FROM candidates').fetchone()[0]
+        self.assertIn('chosen',text)
+        self.assertIn('https://github.com/Wild-Donkey/qq-surf-agent',text)
+        self.assertIn('AI',text)
     def test_dormant_new_group_is_not_greeted(self):
         self.db.execute("INSERT INTO group_onboarding(group_id,created,status,new_group) VALUES ('1',?,'done',1)",(self.now,))
         self.db.execute('INSERT INTO group_activity VALUES (?,?)',('1',self.now-15*86400));self.db.commit()

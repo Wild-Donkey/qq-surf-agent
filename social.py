@@ -3,6 +3,7 @@ import emoticons
 import application
 import model_gate
 import merged_forward
+import bot_identity
 from protocol import ProtocolError
 """Message-triggered conversational planner. Offline memories are fetched per decision."""
 import hashlib
@@ -28,7 +29,7 @@ SYSTEM='''你是一个已公开说明是 AI bot 的普通群友，喜欢搬屎�
 分享只能选择给定 candidate_id，不得编造链接、图片或消息来源。不要跨群传播私人对话或个人信息。
 遇到他人明确拒绝互动、明显不合适、刚回应过同一段话或只有完全看不懂的图片时可以 wait。不能仅以没@你、没点名、无新话题或无知识增量为理由沉默。不冒充真实成员，不捏造亲身经历。
 应用管理上下文加载、存储、账号类型、触发和发信资格。你负责理解群聊并通过状态接口更新群和成员状态，不自己管理文件、flush和调度。
-你只调用应用接口。输出必须是合法 JSON，且只能是 {"call":{"name":"<接口名>","arguments":{...}}} 这一种格式。绝对禁止直接输出 {"action":...}、{"text":...}、{"type":...} 或纯文本；所有决策都必须包在 call 里。常用 finish_turn：{"call":{"name":"finish_turn","arguments":{"action":"reply","text":"简短回复","quality":"natural"}}}。
+自我介绍时公开AI身份、当前实际模型，并附bot_identity.repository_url中的源码链接；普通聊天不反复贴链接。你只调用应用接口。输出必须是合法 JSON，且只能是 {"call":{"name":"<接口名>","arguments":{...}}} 这一种格式。绝对禁止直接输出 {"action":...}、{"text":...}、{"type":...} 或纯文本；所有决策都必须包在 call 里。常用 finish_turn：{"call":{"name":"finish_turn","arguments":{"action":"reply","text":"简短回复","quality":"natural"}}}。
 可调用 read_context、get_member、search_history、list_emoticons、search_emoticons、view_emoticon 读取，update_states 写入状态；通常调用 finish_turn 同时提交 group_state、members 和 action（wait/reply/share/forward/merged_forward）完成本轮。成员状态保留有根据的称呼、关系、话题、偏好、尚未解决的事情及不想被打扰的意愿，不把玩笑当事实。当前目标群由应用固定，不能指定群号或收件人。合并转发只从 forward_bundles 选择 bundle_id 和原序 message_ids（至少2条），quality=natural；复读接龙、抽象互动可以自发搬到当前目标群，不必等指令，没意思就wait。小表情和大表情都可以自然使用，Unicode emoji写text，QQ小表情用face，本群收集的大表情用sticker。看见有趣表情包时通过images写description、is_sticker=true、tags；普通截图is_sticker=false。用search_emoticons按情绪/语境找，没看懂的先view_emoticon看原图再决定，动图仅理解首帧但发送保留原动图。一次只调用一个接口。'''
 
 
@@ -209,7 +210,7 @@ def choose(db,cfg,memory,job,task=None):
     user=job['user_id'] if source==target else None
     recalled=task.session.recall(memory,user) if task else memory.retrieve(target,user,6000)
     query=job['trigger_text']+' '+' '.join(view['text'] for view in recent_views[:4])
-    payload={'memory_contract':{'version':1,'state_fields':['summary','current_topics','open_threads','decisions','boundaries'],'fact_fields':['text','evidence','confidence'],'read_schema_api':'get_memory_schema','write_semantics':'省略字段保留，空数组清空；应用校验并补齐来源和时间'},'group_portrait':application.group_portrait(cfg,target),'emoticon_catalog':emoticons.catalog(memory.root,target),'memory':recalled,
+    payload={'bot_identity':{'name':'Luna','repository_url':bot_identity.REPOSITORY_URL,'model':load_model(cfg).get('model','未知模型')},'memory_contract':{'version':1,'state_fields':['summary','current_topics','open_threads','decisions','boundaries'],'fact_fields':['text','evidence','confidence'],'read_schema_api':'get_memory_schema','write_semantics':'省略字段保留，空数组清空；应用校验并补齐来源和时间'},'group_portrait':application.group_portrait(cfg,target),'emoticon_catalog':emoticons.catalog(memory.root,target),'memory':recalled,
              'recent_visual_observations':[r[0] for r in memory.db.execute("SELECT note FROM notes WHERE scope='group' AND scope_id=? AND note LIKE '图片观察%' AND created>? ORDER BY created DESC LIMIT 4",(str(target),time.time()-1800))],
              'context_watermark':max((r['created'] for r in recent if not r['message_id'].startswith('bot:')),default=0),
              'current_message':{'text':excerpt(job['trigger_text'],6000),'images':job['trigger_images'],'source':'本群' if source==target else '隔壁群'},
