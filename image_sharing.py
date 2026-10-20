@@ -1,3 +1,4 @@
+import moderation
 """Explicit single-image sharing; no foreign conversation enters the reply context."""
 import hashlib,json,time
 from pathlib import Path
@@ -15,6 +16,7 @@ def destinations(db,cfg,source,now=None):
  result=[]
  for row in db.execute('SELECT group_id,max(created) latest FROM speaker_events WHERE created>? GROUP BY group_id ORDER BY latest DESC',(now-300,)).fetchall():
   target=row['group_id']
+  if moderation.is_muted(db,target,now):continue
   if target==str(source) or target not in groups or not participants.humans_recent(db,target,cfg,now):continue
   active=db.execute('SELECT last_member_message FROM group_activity WHERE group_id=?',(target,)).fetchone()
   pause=db.execute('SELECT until_time FROM operator_pause WHERE group_id=?',(target,)).fetchone()

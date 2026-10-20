@@ -1,3 +1,4 @@
+import moderation
 import archive
 import emoticons
 import application
@@ -366,7 +367,7 @@ def tick(db,cfg,sessions=None):
             window=db.execute('SELECT * FROM reaction_windows WHERE group_id=?',(job['target_group'],)).fetchone()
         batch=pending_batch(db,job,interaction,window['cutoff'])
         paused=db.execute('SELECT until_time FROM operator_pause WHERE group_id=?',(job['target_group'],)).fetchone()
-        operator_paused=bool(paused and paused[0]>now)
+        operator_paused=moderation.is_muted(db,job["target_group"],now) or bool(paused and paused[0]>now)
         activity=db.execute('SELECT last_member_message FROM group_activity WHERE group_id=?',(job['target_group'],)).fetchone()
         if not activity or not 0<=now-activity[0]<=cfg.get('inactive_group_days',14)*86400:
             with db:db.execute("UPDATE social_jobs SET status='inactive_group' WHERE event_key=? AND target_group=?",(job['event_key'],job['target_group']))

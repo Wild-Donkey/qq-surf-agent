@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Persistent group-to-group relay. No third-party dependencies or external LLM calls."""
 import archive
+import moderation
 import emoticons
 import argparse
 from collections import Counter
@@ -62,6 +63,7 @@ def connect(path):
         db.execute('ALTER TABLE candidates ADD COLUMN emoticon TEXT')
     if 'deadline_reply' not in {r[1] for r in db.execute('PRAGMA table_info(deliveries)')}:
         db.execute('ALTER TABLE deliveries ADD COLUMN deadline_reply INTEGER DEFAULT 0')
+    moderation.ensure_schema(db)
     social.ensure_schema(db)
     alerts.ensure_schema(db)
     participants.ensure_schema(db)
@@ -75,6 +77,7 @@ def configured_groups(cfg):
 
 def group_is_active(db,group,cfg,now=None):
     now=time.time() if now is None else now
+    if moderation.is_muted(db,group,now):return False
     row=db.execute('SELECT last_member_message FROM group_activity WHERE group_id=?',(str(group),)).fetchone()
     return bool(row and 0<=now-row[0]<=cfg.get('inactive_group_days',14)*86400)
 
@@ -198,6 +201,7 @@ def _register_and_backfill_group(db, group_id, cfg, api_cfg, now):
 
 def ingest(db, event, cfg, now=None, api_cfg=None):
     now = time.time() if now is None else now
+    if moderation.ingest(db,event,cfg,now):return "moderation_notice"
     # Auto-accept group invitations directed at this bot (not member apply requests).
     if event.get('post_type') == 'request' and event.get('request_type') == 'group':
         sub = event.get('sub_type')
@@ -289,6 +293,7 @@ def dispatch(db, cfg, api_cfg, now=None):
     if cfg.get('mode', 'preview') != 'live':
         return 0
     now = time.time() if now is None else now
+    moderation.flush(db,cfg,api_cfg,now)
     login = agent.onebot_call(api_cfg, 'get_login_info')
     if str(login.get('user_id')) != str(cfg['bot_id']):
         raise ValueError('bot 账号不一致')
