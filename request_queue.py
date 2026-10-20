@@ -58,7 +58,7 @@ def accepts(db,group,decision,requests):
  if any(allowed[key]['kind']=='reply' for key in ids) and outcome=='completed' and decision['action']!='reply':return []
  for key in ids:
   if not db.execute("SELECT 1 FROM user_requests WHERE event_key=? AND group_id=? AND status='pending'",(key,str(group))).fetchone():return []
-  if allowed[key]['kind']=='forward' and outcome=='completed' and decision['action'] not in ('merged_forward','share'):return []
+  if allowed[key]['kind']=='forward' and outcome=='completed' and decision['action'] not in ('merged_forward','share_image'):return []
  if outcome in ('declined','needs_info') and (decision['action']!='reply' or not decision.get('text','').strip()):return []
  return ids
 

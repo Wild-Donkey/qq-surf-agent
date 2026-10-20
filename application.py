@@ -17,11 +17,12 @@ TOOLS=[
  {'name':'list_emoticons','description':'读取本群可用表情目录'},
  {'name':'reply','description':'回复当前群，参数 text 和可选 emoticon'},
  {'name':'share','description':'分享给定 candidate_id，参数 candidate_id,text'},
+ {'name':'share_image','description':'把本群已理解的单张图直接发往匹配的活跃群，仅参数image_id、image_destinations给定route_id、quality=natural；无解说文字'},
  {'name':'merged_forward','description':'合并转发一段节目：bundle_id、message_ids、quality=natural；搬本群节目到其他活跃群时再带 outgoing_moments.destination.route_id，省略route_id则搬入当前群'},
  {'name':'forward','description':'转发当前群中某条消息（原生转发卡片），参数 message_id（取自 recent_target_messages）'},
  {'name':'wait','description':'保持安静，参数 reason'}]
-ARGUMENTS={'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id'},'search_history':{'query'},'list_emoticons':set(),'search_emoticons':{'query','include_unreviewed'},'view_emoticon':{'id'},'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'merged_forward':{'bundle_id','message_ids','quality','route_id'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id','bundle_id','message_ids','route_id'}}
-for _terminal in ('finish_turn','reply','share','forward','merged_forward'):
+ARGUMENTS={'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id'},'search_history':{'query'},'list_emoticons':set(),'search_emoticons':{'query','include_unreviewed'},'view_emoticon':{'id'},'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'share_image':{'image_id','route_id','quality'},'merged_forward':{'bundle_id','message_ids','quality','route_id'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id','bundle_id','message_ids','route_id','image_id','image_share'}}
+for _terminal in ('finish_turn','reply','share','forward','merged_forward','share_image'):
  ARGUMENTS[_terminal].update({'request_ids','request_outcome'})
 READS={'get_memory_schema','update_states','read_context','get_member','search_history','list_emoticons','search_emoticons','view_emoticon'}
 def decode(raw):
@@ -34,7 +35,7 @@ def decode(raw):
    value=parse_json(value['content'],'worker_api');continue
   if 'call' not in value:
    if 'action' in value:value={'call':{'name':'finish_turn','arguments':value}}
-   elif value.get('type') in ('wait','reply','share','forward','merged_forward'):
+   elif value.get('type') in ('wait','reply','share','forward','merged_forward','share_image'):
     value={'call':{'name':'finish_turn','arguments':{'action':value['type'],**{k:v for k,v in value.items() if k!='type'}}}}
   if isinstance(value.get('call'),dict) and isinstance(value['call'].get('arguments'),dict):
    args=dict(value['call']['arguments']);extra={k:v for k,v in value.items() if k!='call'}
@@ -57,20 +58,20 @@ def decode(raw):
 def decision(call):
  name=call['name'];args=call['arguments']
  quality=args.get('quality')
- if (name in ('reply','share','merged_forward') or name=='finish_turn' and args.get('action') in ('reply','share','merged_forward')) and quality!='natural':
+ if (name in ('reply','share','merged_forward','share_image') or name=='finish_turn' and args.get('action') in ('reply','share','merged_forward','share_image')) and quality!='natural':
   result={'action':'wait','text':'','reason':'回复难接、尴尬或尚未确认自然，跳过本轮'}
   if name=='finish_turn':result['state_updates']={k:args[k] for k in ('group_state','members','images') if k in args}
   return result
  if name=='finish_turn':
-  if args.get('action') not in ('wait','reply','share','forward','merged_forward'):raise ValueError('invalid_finish_action')
+  if args.get('action') not in ('wait','reply','share','forward','merged_forward','share_image'):raise ValueError('invalid_finish_action')
   if not isinstance(args.get('text',''),str):raise ValueError('invalid_text')
-  return {'action':args['action'],'text':args.get('text','')[:180],'request_ids':args.get('request_ids',[]),'request_outcome':args.get('request_outcome'),'route_id':args.get('route_id'),'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'message_id':str(args.get('message_id','')) if args.get('message_id') else None,'reason':str(args.get('reason',''))[:200],'state_updates':{k:args[k] for k in ('group_state','members','images') if k in args}}
+  return {'action':args['action'],'text':args.get('text','')[:180],'image_share':args.get('image_share'),'image_id':args.get('image_id'),'request_ids':args.get('request_ids',[]),'request_outcome':args.get('request_outcome'),'route_id':args.get('route_id'),'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'message_id':str(args.get('message_id','')) if args.get('message_id') else None,'reason':str(args.get('reason',''))[:200],'state_updates':{k:args[k] for k in ('group_state','members','images') if k in args}}
  if name in READS:return {'action':'read','call':call,'text':''}
  if name=='forward':
   mid=str(args.get('message_id',''))
   if not mid:raise ValueError('forward_requires_message_id')
   return {'action':'forward','text':'','message_id':mid,'emoticon':None,'reason':''}
- return {'action':name,'text':args.get('text','')[:180],'request_ids':args.get('request_ids',[]),'request_outcome':args.get('request_outcome'),'route_id':args.get('route_id'),'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'reason':str(args.get('reason',''))[:200]}
+ return {'action':name,'text':args.get('text','')[:180],'image_share':args.get('image_share'),'image_id':args.get('image_id'),'request_ids':args.get('request_ids',[]),'request_outcome':args.get('request_outcome'),'route_id':args.get('route_id'),'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'reason':str(args.get('reason',''))[:200]}
 def read(db,cfg,target,payload,call):
  name=call['name'];args=call['arguments']
  if name=='get_memory_schema':return {k:memory_store.SCHEMA['$defs'][k] for k in ('FactInput','RelationInput','StateInput','GroupPortraitInput','PersonPortraitInput')}

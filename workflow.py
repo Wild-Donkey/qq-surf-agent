@@ -295,7 +295,7 @@ def dispatch(db, cfg, api_cfg, now=None):
     groups = configured_groups(cfg)
     jobs = db.execute("""SELECT d.*,c.source_group,c.text,c.images,c.kind,c.emoticon FROM deliveries d
         JOIN candidates c ON c.id=d.candidate_id WHERE d.status='approved' AND c.status='approved'
-        AND ((c.kind IN ('reply','merged_forward','moment_forward') AND d.created<=?) OR (c.kind NOT IN ('reply','merged_forward','moment_forward') AND d.created<=?))
+        AND ((c.kind IN ('reply','merged_forward','moment_forward','image_share') AND d.created<=?) OR (c.kind NOT IN ('reply','merged_forward','moment_forward','image_share') AND d.created<=?))
         ORDER BY CASE WHEN c.kind='reply' THEN 0 ELSE 1 END,d.id LIMIT 50""", (now-cfg.get('reply_delay_seconds',0),now-cfg.get('hold_seconds',120))).fetchall()
     sent = 0
     for job in jobs:
@@ -318,12 +318,12 @@ def dispatch(db, cfg, api_cfg, now=None):
                 alerts.record(db,'refresh_before_send_failed','发送前刷新群消息失败，暂不发旧草稿。',details={'stage':'get_group_msg_history','error':type(exc).__name__,'retcode':getattr(exc,'retcode',None)})
                 continue
         # Only a frozen continuous-traffic window may ignore newer arrivals.
-        if job['kind']!='moment_forward' and not social.request_queue.is_bound(db,job['id']) and not job['deadline_reply'] and newer_context(db,target,job['context_watermark']):
+        if job['kind'] not in ('moment_forward','image_share') and not social.request_queue.is_bound(db,job['id']) and not job['deadline_reply'] and newer_context(db,target,job['context_watermark']):
             with db:db.execute("UPDATE deliveries SET status='superseded',updated=? WHERE id=?",(now,job['id']))
             continue
         paused=db.execute('SELECT until_time FROM operator_pause WHERE group_id=?',(target,)).fetchone()
         if paused and paused[0]>now:continue
-        if job['kind'] in ('reply','merged_forward','moment_forward') and now-job['created']>180:
+        if job['kind'] in ('reply','merged_forward','moment_forward','image_share') and now-job['created']>180:
             with db:db.execute("UPDATE deliveries SET status='expired',updated=? WHERE id=?",(now,job['id']))
             continue
         # Serialize rate-limit accounting and claims across workers/processes.
@@ -336,7 +336,7 @@ def dispatch(db, cfg, api_cfg, now=None):
         global_day = db.execute("SELECT count(*) FROM deliveries WHERE status IN ('sent','uncertain') AND updated>?",(now-86400,)).fetchone()[0]
         last = db.execute("SELECT max(updated) FROM deliveries WHERE target_group=? AND status IN ('sent','uncertain')",(target,)).fetchone()[0]
         cooldown=cfg.get('reply_cooldown_seconds',0) if job['kind']=='reply' else cfg.get('group_cooldown_seconds',3600)
-        if job['kind'] in ('merged_forward','moment_forward'):cooldown=cfg.get('merged_forward',{}).get('cooldown_seconds',60)
+        if job['kind'] in ('merged_forward','moment_forward','image_share'):cooldown=cfg.get('merged_forward',{}).get('cooldown_seconds',60)
         if job['kind']!='reply':
             last=db.execute("SELECT max(d.updated) FROM deliveries d JOIN candidates c ON c.id=d.candidate_id WHERE d.target_group=? AND c.kind!='reply' AND d.status IN ('sent','uncertain')",(target,)).fetchone()[0]
             shares=db.execute("SELECT count(*) FROM deliveries d JOIN candidates c ON c.id=d.candidate_id WHERE d.target_group=? AND c.kind!='reply' AND d.status IN ('sent','uncertain') AND d.updated>?",(target,now-86400)).fetchone()[0]
@@ -358,13 +358,18 @@ def dispatch(db, cfg, api_cfg, now=None):
         if cfg.get('send_images', True):
             parts.extend({'type':'image','data':{'file':image['url']}} for image in json.loads(job['images']))
         try:
-            if job['kind']!='moment_forward' and not social.request_queue.is_bound(db,job['id']) and not job['deadline_reply'] and newer_context(db,target,job['context_watermark']):
+            if job['kind'] not in ('moment_forward','image_share') and not social.request_queue.is_bound(db,job['id']) and not job['deadline_reply'] and newer_context(db,target,job['context_watermark']):
                 with db:db.execute("UPDATE deliveries SET status='superseded',updated=? WHERE id=?",(time.time(),job['id']))
                 continue
             if not participants.humans_recent(db,target,cfg):
                 with db:db.execute("UPDATE deliveries SET status='approved' WHERE id=?",(job['id'],))
                 continue
-            if job['kind'] in ('merged_forward','moment_forward'):
+            if job['kind']=='image_share':
+                import image_sharing
+                parts=image_sharing.send_parts(db,cfg,job['source_group'],target,job['text'])
+                result=agent.onebot_call(api_cfg,'send_group_msg',{'group_id':int(target),'message':parts})
+                text='[分享图片：'+json.loads(job['text'])['description'][:200]+']'
+            elif job['kind'] in ('merged_forward','moment_forward'):
                 import merged_forward
                 forward_payload=merged_forward.send_payload(db,cfg,target,job['source_group'],job['text'])
                 result=agent.onebot_call(api_cfg,'send_group_forward_msg',forward_payload)

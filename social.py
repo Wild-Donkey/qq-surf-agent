@@ -5,6 +5,7 @@ import model_gate
 import merged_forward
 import bot_identity
 import request_queue
+import image_sharing
 from protocol import ProtocolError
 """Message-triggered conversational planner. Offline memories are fetched per decision."""
 import hashlib
@@ -31,7 +32,7 @@ pending_requests 是尚未处理的明确请求，优先级高于普通聊天，
 遇到他人明确拒绝互动、明显不合适、刚回应过同一段话或只有完全看不懂的图片时可以 wait。不能仅以没@你、没点名、无新话题或无知识增量为理由沉默。不冒充真实成员，不捏造亲身经历。
 应用管理上下文加载、存储、账号类型、触发和发信资格。你负责理解群聊并通过状态接口更新群和成员状态，不自己管理文件、flush和调度。
 自我介绍时公开AI身份、当前实际模型，并附bot_identity.repository_url中的源码链接；普通聊天不反复贴链接。你只调用应用接口。输出必须是合法 JSON，且只能是 {"call":{"name":"<接口名>","arguments":{...}}} 这一种格式。绝对禁止直接输出 {"action":...}、{"text":...}、{"type":...} 或纯文本；所有决策都必须包在 call 里。常用 finish_turn：{"call":{"name":"finish_turn","arguments":{"action":"reply","text":"简短回复","quality":"natural"}}}。
-可调用 read_context、get_member、search_history、list_emoticons、search_emoticons、view_emoticon 读取，update_states 写入状态；通常调用 finish_turn 同时提交 group_state、members 和 action（wait/reply/share/forward/merged_forward）完成本轮。成员状态保留有根据的称呼、关系、话题、偏好、尚未解决的事情及不想被打扰的意愿，不把玩笑当事实。不能指定任意群号或收件人。当前对话与普通回复只属于本群，不能隔空回复别的群；跨群只允许明确的合并转发。本群特别有节目时，主动从outgoing_moments选完整片段，并带destination.route_id合并转发到给定活跃群，不必等群友指挥；普通聊天不搬、不掐头去尾。其余合并转发只从 forward_bundles 选择 bundle_id 和原序 message_ids（至少2条），quality=natural；复读接龙、抽象互动可以自发搬到当前目标群，不必等指令，没意思就wait。小表情和大表情都可以自然使用，Unicode emoji写text，QQ小表情用face，本群收集的大表情用sticker。看见有趣表情包时通过images写description、is_sticker=true、tags；普通截图is_sticker=false。用search_emoticons按情绪/语境找，没看懂的先view_emoticon看原图再决定，动图仅理解首帧但发送保留原动图。一次只调用一个接口。'''
+可调用 read_context、get_member、search_history、list_emoticons、search_emoticons、view_emoticon 读取，update_states 写入状态；通常调用 finish_turn 同时提交 group_state、members 和 action（wait/reply/share/forward/merged_forward）完成本轮。成员状态保留有根据的称呼、关系、话题、偏好、尚未解决的事情及不想被打扰的意愿，不把玩笑当事实。不能指定任意群号或收件人。当前对话与普通回复只属于本群，不能隔空回复别的群；跨群只允许明确的合并转发。对图正常评论后再独立判断分享价值，不要什么都发；有明确笑点/离谱点且目标群趣味契合时才分享。finish_turn可在本群reply或wait之外带image_share={image_id,route_id,quality:"natural",reason:"有意思在哪、为什么适合该群"}，应用先发本群评论再发图；最多一个去处。也可直接share_image发送图片，image_id取outgoing_images或实际附图sticker_id，route_id取image_destinations；不解释梗、不把别群话当目标群发言。连续对话才合并转发。本群特别有节目时，主动从outgoing_moments选完整片段，并带destination.route_id合并转发到给定活跃群，不必等群友指挥；普通聊天不搬、不掐头去尾。其余合并转发只从 forward_bundles 选择 bundle_id 和原序 message_ids（至少2条），quality=natural；复读接龙、抽象互动可以自发搬到当前目标群，不必等指令，没意思就wait。小表情和大表情都可以自然使用，Unicode emoji写text，QQ小表情用face，本群收集的大表情用sticker。看见有趣表情包时通过images写description、is_sticker=true、tags；普通截图is_sticker=false。用search_emoticons按情绪/语境找，没看懂的先view_emoticon看原图再决定，动图仅理解首帧但发送保留原动图。一次只调用一个接口。'''
 
 
 def ensure_schema(db):
@@ -219,7 +220,7 @@ def choose(db,cfg,memory,job,task=None):
              'relevant_older_windows':memory.recall_episodes(target,query),
              'pending_requests':request_queue.pending(db,target),'trigger':'本群有新消息' if source==target else '隔壁群有新消息，可考虑分享；当前群不活跃则保持安静',
              'candidates':material,
-             'forward_bundles':[],'outgoing_moments':merged_forward.outgoing(db,cfg,target) if source==target else []}
+             'image_destinations':image_sharing.destinations(db,cfg,target),'outgoing_images':image_sharing.gallery(cfg['context_dir'],target),'forward_bundles':[],'outgoing_moments':merged_forward.outgoing(db,cfg,target) if source==target else []}
     if source==target and payload['pending_requests'] and payload['pending_requests'][0]['kind']=='forward':
         payload['outgoing_moments']=merged_forward.outgoing(db,cfg,target,before=payload['pending_requests'][0]['created'])
     previous_error=db.execute('SELECT value FROM metrics WHERE key=?',('state_update_error:'+str(target),)).fetchone()
@@ -263,6 +264,7 @@ def apply_decision(db,job,decision,candidates,cfg,now):
         if not decision.get('text','').strip() and not selection:
             decision.update(action='wait',reason='没有可发送的文字或有效表情')
     if decision['action']=='wait':return
+    if decision['action']=='share_image':return image_sharing.approve(db,cfg,target,decision,now)
     if decision['action']=='merged_forward':
         if decision.get('route_id'):return merged_forward.approve_outgoing(db,cfg,target,decision,now)
         return merged_forward.approve(db,cfg,target,decision,now)
@@ -438,6 +440,7 @@ def tick(db,cfg,sessions=None):
             decision['_deadline_reply']=bool(window['forced'])
             decision['_forward_bundles']=payload.get('forward_bundles',[])
             decision['_outgoing_moments']=payload.get('outgoing_moments',[])
+            decision['_image_destinations']=payload.get('image_destinations',[])
             decision['_forward_message_ids']=[str(v['message_id']) for v in payload['recent_target_messages'] if not str(v['message_id']).startswith('bot:')]
             # Neither speaker judgments nor memory edits from a worker are consumed.
             vision_status=usage.get('_vision_status',{})
@@ -461,6 +464,14 @@ def tick(db,cfg,sessions=None):
             if more and not addressed:decision=dict(decision,action='wait',text='',reason='本窗口还有未读消息，读完后再接话')
             delivery=apply_decision(db,batch[-1],decision,candidates,cfg,now)
             request_queue.bind(db,job['target_group'],addressed,decision,delivery,time.time())
+            proposal=decision.get('image_share')
+            if decision['action'] in ('reply','wait') and not operator_paused and not more and (not payload.get('pending_requests') or addressed) and isinstance(proposal,dict):
+                if proposal.get('quality')=='natural' and isinstance(proposal.get('reason'),str) and 1<=len(proposal['reason'])<=200:
+                    try:
+                        sharing=dict(proposal,_image_destinations=payload.get('image_destinations',[]))
+                        image_sharing.approve(db,cfg,job['target_group'],sharing,time.time())
+                    except ValueError:
+                        decision['_image_share_rejected']=True
             with db:
                 db.execute("UPDATE user_requests SET next_attempt=? WHERE group_id=? AND status='pending'",(time.time()+5,job['target_group']))
             with db:
