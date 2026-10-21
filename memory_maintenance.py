@@ -116,7 +116,7 @@ def tick(db,cfg,invoke=None,now=None):
   store=memory_store.MemoryStore(cfg['context_dir'])
   try:
    users=sorted({m['speaker'] for m in messages if m['speaker'].isdigit() and m['speaker']!=str(cfg.get('bot_id'))})
-   payload={'group_id':job['group_id'],'triggers':json.loads(job['reasons']),'messages':messages,'existing_group':editable(store.load('group',job['group_id'])),'existing_people':[editable(store.load('person',u)) for u in users],'schema':memory_store.SCHEMA['$defs']}
+   payload={'group_id':job['group_id'],'triggers':json.loads(job['reasons']),'messages':messages,'existing_group':editable(store.load('group',job['group_id'])),'existing_people':[editable(store.load('person',u)) for u in users],'schema':{name:memory_store.SCHEMA['$defs'][name] for name in ('FactInput','RelationInput','StateInput','GroupPortraitInput','PersonPortraitInput')}}
    if invoke:value=invoke(payload)
    else:
     import social
@@ -125,7 +125,9 @@ def tick(db,cfg,invoke=None,now=None):
     slot=model_gate.reserve(db,cfg)
     if slot is None:return False
     try:
-     model=dict(social.load_model(cfg));model['_text_format']={'type':'json_object'};model['max_completion_tokens']=max(6144,int(model.get('max_completion_tokens',4096)))
+     model=dict(social.load_model(cfg))
+     if model.get('provider')!='chatgpt':model['reasoning_effort']='none'
+     model['_text_format']={'type':'json_object'};model['max_completion_tokens']=max(6144,int(model.get('max_completion_tokens',4096)))
      raw,usage=social.generate_text(model,PROMPT,payload);value=parse_json(raw,'incremental_memory')
      apply(store,job['group_id'],value,messages)
      with db:db.execute("UPDATE model_calls SET status='ok',input_tokens=?,output_tokens=? WHERE id=?",(usage.get('prompt_tokens',0),usage.get('completion_tokens',0),slot))
@@ -142,6 +144,7 @@ def tick(db,cfg,invoke=None,now=None):
    detail=str(exc)
    code=type(exc).__name__+(':'+detail[:160] if re.fullmatch(r'[A-Za-z0-9_.$:, \[\]-]{1,200}',detail) else '')
    with queue:queue.execute('UPDATE jobs SET error=?,next_attempt=? WHERE group_id=?',(code,now+60,job['group_id']))
+  if 'job' in locals() and job and hasattr(exc,'details'):exc.details.update(group_id=job['group_id'],stage='incremental_memory')
   raise
  finally:queue.close()
 

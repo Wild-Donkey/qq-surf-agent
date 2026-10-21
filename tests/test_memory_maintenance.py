@@ -70,6 +70,13 @@ class MaintenanceTests(unittest.TestCase):
    self.assertEqual(saved['source'],'incremental_memory');self.assertNotEqual(saved['first_seen'],1)
    with self.assertRaises(ValueError):mm.apply(store,'1',{'group':{'portrait':{'topics':[dict(fact,arbitrary='bad')]}}},[{'event_key':'1:a','speaker':'2'}])
   finally:store.close()
+ def test_model_uses_fast_mode_and_input_only_schema(self):
+  self.record('a')
+  with patch('social.load_model',return_value={'provider':'compatible'}),patch('model_gate.reserve',return_value=1),patch('social.generate_text',return_value=('{}',{})) as infer:
+   mm.tick(self.db,self.cfg)
+  model,_,payload=infer.call_args.args
+  self.assertEqual(model['reasoning_effort'],'none')
+  self.assertNotIn('Person',payload['schema'])
  def test_atomic_bundle_rejects_wrong_evidence(self):
   self.record('a');store=memory_store.MemoryStore(self.tmp.name)
   try:

@@ -159,8 +159,11 @@ def generate_text(model,instructions,payload):
         if model.get('reasoning_effort'):
             body['reasoning_effort']=model['reasoning_effort']
     response=json.loads(agent.request(model['base_url'].rstrip('/')+'/chat/completions',body,api_key(model)))
-    raw=response['choices'][0]['message']['content']
+    choice=response['choices'][0]
+    raw=choice['message'].get('content')
     usage=response.get('usage',{});usage['_vision_status']=private_vision_status
+    if not isinstance(raw,str) or not raw.strip():
+        raise ProtocolError('model_response','model_empty_output',{'finish_reason':str(choice.get('finish_reason','unknown'))[:40],'completion_tokens':usage.get('completion_tokens',0)})
     return raw,usage
 
 

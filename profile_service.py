@@ -33,19 +33,23 @@ def main():
    for group in cfg['groups']:
     if profiling_enabled and group.get('enabled',True):profiling.enqueue(db,cfg,str(group['id']))
    active=db.execute("SELECT group_id,phase FROM profile_jobs WHERE status IN ('queued','running') ORDER BY updated,group_id LIMIT 1").fetchone()
-   try:
-    api=json.loads((ROOT/'config.json').read_text())
-    memory_maintenance.tick(db,cfg)
-    if profiling_enabled:profiling.tick(db,cfg,api)
-    stop.wait(1)
-   except Exception as exc:
-    group=active['group_id'] if active else ''
-    details={'group_id':group,'stage':active['phase'] if active else 'scheduler','error':type(exc).__name__}
-    if hasattr(exc,'details'):details.update(exc.details)
-    if active:
-     with db:db.execute('UPDATE profile_jobs SET error=? WHERE group_id=?',(type(exc).__name__,group))
-    alerts.record(db,'profile_'+type(exc).__name__,'画像建档暂缓，正在自动排障。',scope=group,details=details)
-    print('画像任务暂缓：'+type(exc).__name__,flush=True);stop.wait(30)
+   api=json.loads((ROOT/'config.json').read_text())
+   failed=False
+   tasks=[('incremental_memory',lambda:memory_maintenance.tick(db,cfg))]
+   if profiling_enabled:tasks.append(('history_profile',lambda:profiling.tick(db,cfg,api)))
+   for stage,run in tasks:
+    try:run()
+    except Exception as exc:
+     failed=True
+     group=active['group_id'] if stage=='history_profile' and active else ''
+     details={'group_id':group,'stage':stage,'error':type(exc).__name__}
+     if hasattr(exc,'details'):details.update(exc.details)
+     group=details.get('group_id',group)
+     if stage=='history_profile' and active:
+      with db:db.execute('UPDATE profile_jobs SET error=? WHERE group_id=?',(type(exc).__name__,group))
+     alerts.record(db,'profile_'+type(exc).__name__,'画像建档暂缓，正在自动排障。',scope=stage+':'+group,details=details)
+     print(stage+' 暂缓：'+type(exc).__name__,flush=True)
+   stop.wait(30 if failed else 1)
  finally:
   (ROOT/'runtime/profile-worker.pid').unlink(missing_ok=True);db.close();lock.close()
 if __name__=='__main__':main()
