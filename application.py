@@ -13,7 +13,8 @@ TOOLS=[
  {'name':'update_states','description':'提交群状态 group_state 和成员状态 members:[{user_id,state}]，应用校验后落盘'},
  {'name':'finish_turn','description':'一次提交状态并结束：group_state,members,action(wait/reply/share/merged_forward),text,candidate_id,bundle_id,message_ids,quality,emoticon,reason'},
  {'name':'read_context','description':'读取应用准备的当前群上下文，无参数'},
- {'name':'get_member','description':'读取当前上下文内成员画像，参数 user_id'},
+ {'name':'get_member','description':'按全局代号alias查询QQ号、用户名、群名片、记忆；兼容user_id'},
+ {'name':'set_member_alias','description':'依据当前群真实发言更新成员的全局称呼，参数alias,name,evidence_event_key；不可凭空取外号'},
  {'name':'search_history','description':'按 query 检索当前群已落盘历史'},
  {'name':'search_emoticons','description':'按语义描述/标签检索本群已收集表情，参数query，可选include_unreviewed查看尚未理解的图片'},
  {'name':'view_emoticon','description':'查看本群收集的某张表情，参数id；应用下一次调用附上真实图片'},
@@ -24,12 +25,12 @@ TOOLS=[
  {'name':'merged_forward','description':'合并转发一段节目：bundle_id、message_ids、quality=natural；搬本群节目到其他活跃群时再带 outgoing_moments.destination.route_id，省略route_id则搬入当前群'},
  {'name':'forward','description':'转发当前群中某条消息（原生转发卡片），参数 message_id（取自 recent_target_messages）'},
  {'name':'wait','description':'保持安静，参数 reason'}]
-ARGUMENTS={'record_understanding':{'understanding'},'web_search':{'query'},'read_webpage':{'url'},'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id'},'search_history':{'query'},'list_emoticons':set(),'search_emoticons':{'query','include_unreviewed'},'view_emoticon':{'id'},'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'share_image':{'image_id','route_id','quality'},'merged_forward':{'bundle_id','message_ids','quality','route_id'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id','bundle_id','message_ids','route_id','image_id','image_share'}}
+ARGUMENTS={'record_understanding':{'understanding'},'web_search':{'query'},'read_webpage':{'url'},'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id','alias'},'set_member_alias':{'alias','name','evidence_event_key'},'search_history':{'query'},'list_emoticons':set(),'search_emoticons':{'query','include_unreviewed'},'view_emoticon':{'id'},'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'share_image':{'image_id','route_id','quality'},'merged_forward':{'bundle_id','message_ids','quality','route_id'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id','bundle_id','message_ids','route_id','image_id','image_share'}}
 for _terminal in ('finish_turn','reply','share','forward','merged_forward','share_image'):
  ARGUMENTS[_terminal].update({'request_ids','request_outcome'})
 ARGUMENTS['reply'].add('reply_parts');ARGUMENTS['finish_turn'].add('reply_parts')
 for _terminal in ('finish_turn','reply','wait','share','forward','merged_forward','share_image'):ARGUMENTS[_terminal].add('understanding')
-READS={'record_understanding','web_search','read_webpage','get_memory_schema','update_states','read_context','get_member','search_history','list_emoticons','search_emoticons','view_emoticon'}
+READS={'record_understanding','web_search','read_webpage','get_memory_schema','update_states','read_context','get_member','set_member_alias','search_history','list_emoticons','search_emoticons','view_emoticon'}
 def decode(raw):
  value=parse_json(raw,'worker_api')
  # Bounded normalization; never let outer fields override explicit arguments.
@@ -106,13 +107,27 @@ def read(db,cfg,target,payload,call):
   item=emoticons.preview(cfg['context_dir'],target,identity)
   payload['_vision']=[item]+[v for v in payload.get('_vision',[]) if v['reference']!=item['reference']][:3]
   return {'reference':item['reference'],'instruction':'下一次调用附上这张真实图片；用images状态接口描述、标记is_sticker和tags后可选择发送'}
- if name=='get_member':
-  user=str(args.get('user_id',''))
+ if name in ('get_member','set_member_alias'):
+  import identities
+  registry=identities.Registry(cfg['context_dir'])
+  try:user=registry.resolve(args.get('alias',args.get('user_id','')))
+  finally:registry.close()
   allowed={str(v['id']) for v in payload.get('member_profiles',[])}
   if user not in allowed:raise ValueError('member_outside_context')
+  if name=='set_member_alias':
+   key=str(args.get('evidence_event_key',''));new=args.get('name')
+   evidence=next((v for v in payload.get('unread_messages',[])+payload.get('recent_target_messages',[]) if v.get('event_key')==key),None)
+   if not isinstance(new,str) or not new.strip() or not evidence or new.strip() not in evidence.get('text',''):raise ValueError('alias_requires_observed_evidence')
+   registry=identities.Registry(cfg['context_dir'])
+   try:return {'alias':registry.set(user,new,'observed:'+key)}
+   finally:registry.close()
   row=db.execute('SELECT * FROM speaker_profiles WHERE user_id=?',(user,)).fetchone()
   result=dict(row) if row else {'user_id':user,'kind':'unknown'}
   result['memory']=member_markdown(cfg,target,user)
+  try:
+   info=__import__('agent').onebot_call(cfg,'get_group_member_info',{'group_id':int(target),'user_id':int(user),'no_cache':False})
+   result['account']={k:info.get(k) for k in ('user_id','nickname','card') if k in info}
+  except Exception:result['account_status']='unavailable'
   if memory_store.enabled(cfg['context_dir']):
    store=memory_store.MemoryStore(cfg['context_dir'])
    try:

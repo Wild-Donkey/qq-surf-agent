@@ -137,7 +137,8 @@ def call_model(model,payload):
 
 def generate_text(model,instructions,payload):
     if not model.get('enabled') or not api_key(model):raise ValueError('模型密钥尚未配置')
-    import vision
+    import vision,identities
+    payload=identities.worker_payload(payload)
     payload,image_inputs=vision.prepare(payload)
     private_vision_status=payload['vision_status']
     payload=dict(payload);payload['vision_status']={'attached':[{k:v for k,v in item.items() if k in ('reference','animated_first_frame','sticker_id','sticker_hint')} for item in private_vision_status['attached']],'unavailable':private_vision_status['unavailable']}
@@ -223,11 +224,11 @@ def choose(db,cfg,memory,job,task=None):
         user=operator_owner or ('self' if row['message_id'].startswith('bot:') else row['user_id'])
         view=message_view(db,memory,target,row['text'][:budget],len(json.loads(row['images'])),user,row['trigger_reply'] or '',json.loads(row['trigger_mentions'] or '[]'))
         if operator_owner:view.update(author_role='bot_owner',transport_speaker='bot',instruction='这条是运营者人工发言，不是bot自动生成')
-        view['message_id']=row['message_id'];view['time']=row['created']
+        view['message_id']=row['message_id'];view['event_key']=str(target)+':'+str(row['message_id']);view['time']=row['created']
         budget-=len(view['text']);recent_views.append(view)
     candidates=[];material=[]
     user=job['user_id'] if source==target else None
-    recalled=task.session.recall(memory,user) if task else memory.retrieve(target,user,6000)
+    recalled=task.session.recall(memory) if task else memory.retrieve(target,None,6000)
     query=' '.join(view['text'] for view in recent_views[:6]) or job['trigger_text']
     payload={'bot_identity':{'name':'Luna','repository_url':bot_identity.REPOSITORY_URL,'model':load_model(cfg).get('model','未知模型')},'memory_contract':{'version':1,'state_fields':['summary','current_topics','open_threads','decisions','boundaries'],'fact_fields':['text','evidence','confidence'],'read_schema_api':'get_memory_schema','write_semantics':'省略字段保留，空数组清空；应用校验并补齐来源和时间'},'group_portrait':application.group_portrait(cfg,target),'emoticon_catalog':emoticons.catalog(memory.root,target,query),'memory':recalled,
              'recent_visual_observations':[r[0] for r in memory.db.execute("SELECT note FROM notes WHERE scope='group' AND scope_id=? AND note LIKE '图片观察%' AND created>? ORDER BY created DESC LIMIT 4",(str(target),time.time()-1800))],
@@ -468,7 +469,8 @@ def tick(db,cfg,sessions=None):
             context_users.update(referenced_users)
             evidence_batch=[{'user_id':user} for user in context_users|{str(v['user_id']) for v in batch}]
             payload['member_profiles']=participants.evidence(db,evidence_batch)
-            payload['member_memories']=application.member_context(cfg,job['target_group'],payload)
+            payload['_identity_root']=str(memory.root)
+            payload['_identity_bot']=str(cfg.get('bot_id',''))
             summary_key='window_summary:'+job['target_group']
             prior=db.execute('SELECT value FROM metrics WHERE key=?',(summary_key,)).fetchone()
             payload['already_read_window_summary']=prior[0] if prior else ''

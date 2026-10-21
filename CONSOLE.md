@@ -113,3 +113,5 @@ worker的每条未读记录包含实际发言人ID、称呼、消息ID、event_k
 每个5秒静默/20秒上限触发的窗口有稳定的 `request_slot.request_id`，与单条 `pending_requests` 待办不同。无论是否有图、是否公开回复，worker均可提交独立的 `understanding={summary,images,uncertainties}`。优先调用 `record_understanding` 先存笔记并拿回执，再决定公开回应；也可随 `finish_turn` 一并提交，`wait`同样保存。
 
 应用将其保存到 `context/worker-understandings.sqlite3` 和 `context/groups/<群号>/requests/<request_id>.md`，并写入 `runtime/logs/surf-bot.log`，不会发送到QQ。下一轮注入同群最近的有限摘要，完整观察仍落盘。图片说明只接受真正附过的引用，可同时更新已有图片归档和表情库。与人物状态校验独立，缺少理解或校验失败会记录 missing/rejected，模型调用失败标 failed；不伪造理解。公开 text/reply_parts 与内部理解分开，只有明确要求解释或总结时才公开说明。
+
+群聊 worker 的发言格式为 `代号：内容`。全局代号保存在 context/identities.sqlite3，初始取账号用户名（5个汉字/10个字母的显示宽度），同名自动区分。引用与历史统一使用代号；完整成员信息通过 get_member(alias) 查询，观察到稳定称呼后可带真实发言证据更新。
