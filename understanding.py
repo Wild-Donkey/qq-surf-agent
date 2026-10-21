@@ -4,7 +4,7 @@ from pathlib import Path
 from memory import atomic_write,safe_id
 import service_log
 
-CONTRACT={'summary':'当前局面的可核实简述，尽量300字内，不是公开回复，不写推理过程','images':[{'reference':'实际附图引用','description':'可见画面、文字与不确定之处，尽量400字内','is_sticker':False,'tags':[]}],'uncertainties':['尚不确定的事实或指代']}
+CONTRACT={'summary':'仅本窗口新增事实/话题变化，1至2句尽量120字内；无新增可留空，不复述旧摘要，不写是否该接话','images':[{'reference':'实际附图引用','description':'本轮首次理解或纠正的可见画面与文字，尽量200字内，不重复旧图说明','is_sticker':False,'tags':[]}],'uncertainties':['影响事实判断的具体未知，无则空数组；不填是否期待接话、是否抛梗等社交猜测']}
 
 def connect(cfg):
  root=Path(cfg['context_dir']);root.mkdir(parents=True,exist_ok=True)
