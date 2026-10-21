@@ -43,7 +43,12 @@
     "min_model_interval_seconds": 5,
     "active_group_seconds": 1800,
     "idle_flush_seconds": 300,
-    "max_wait_seconds": 20
+    "max_wait_seconds": 20,
+    "orientation_enabled": true,
+    "orientation_lookback_seconds": 7200,
+    "orientation_messages": 300,
+    "orientation_char_budget": 24000,
+    "orientation_refresh_seconds": 900
   },
   "alerts": {
     "owner_qq": "YOUR_OWNER_QQ",

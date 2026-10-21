@@ -6,6 +6,8 @@ import archive,emoticons,participants
 from protocol import parse_json
 import memory_store
 TOOLS=[
+ {'name':'retrace_context','description':'不懂指代/话题来历时回溯本群原话，参数query（可空）；应用进入预读阶段，读完再set_group_context确认背景，不先猜着回复'},
+ {'name':'set_group_context','description':'完成群会话预读，参数topics:[{text,evidence_event_keys}],referents:[{expression,interpretation,evidence_event_keys,certainty:confirmed/tentative/unknown}],open_interactions:[{text,evidence_event_keys}]；只写有原话依据的指代与局面'},
  {'name':'record_understanding','description':'保存本轮局面理解（内部字段），参数understanding:{summary,images:[{reference,description,is_sticker,tags}],uncertainties}；写context与日志，之后再决定公开回复'},
  {'name':'web_search','description':'公开互联网搜索，参数query（最多300字符），返回来源标题、摘要、链接和检索时间'},
  {'name':'read_webpage','description':'读取公开网页正文，参数url；不访问本机、内网、登录账号或下载文件'},
@@ -25,12 +27,12 @@ TOOLS=[
  {'name':'merged_forward','description':'合并转发一段节目：bundle_id、message_ids、quality=natural；搬本群节目到其他活跃群时再带 outgoing_moments.destination.route_id，省略route_id则搬入当前群'},
  {'name':'forward','description':'转发当前群中某条消息（原生转发卡片），参数 message_id（取自 recent_target_messages）'},
  {'name':'wait','description':'保持安静，参数 reason'}]
-ARGUMENTS={'record_understanding':{'understanding'},'web_search':{'query'},'read_webpage':{'url'},'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id','alias'},'set_member_alias':{'alias','name','evidence_event_key'},'search_history':{'query'},'list_emoticons':set(),'search_emoticons':{'query','include_unreviewed'},'view_emoticon':{'id'},'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'share_image':{'image_id','route_id','quality'},'merged_forward':{'bundle_id','message_ids','quality','route_id'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id','bundle_id','message_ids','route_id','image_id','image_share'}}
+ARGUMENTS={'retrace_context':{'query'},'set_group_context':{'topics','referents','open_interactions'},'record_understanding':{'understanding'},'web_search':{'query'},'read_webpage':{'url'},'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id','alias'},'set_member_alias':{'alias','name','evidence_event_key'},'search_history':{'query'},'list_emoticons':set(),'search_emoticons':{'query','include_unreviewed'},'view_emoticon':{'id'},'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'share_image':{'image_id','route_id','quality'},'merged_forward':{'bundle_id','message_ids','quality','route_id'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id','bundle_id','message_ids','route_id','image_id','image_share'}}
 for _terminal in ('finish_turn','reply','share','forward','merged_forward','share_image'):
  ARGUMENTS[_terminal].update({'request_ids','request_outcome'})
 ARGUMENTS['reply'].add('reply_parts');ARGUMENTS['finish_turn'].add('reply_parts')
 for _terminal in ('finish_turn','reply','wait','share','forward','merged_forward','share_image'):ARGUMENTS[_terminal].add('understanding')
-READS={'record_understanding','web_search','read_webpage','get_memory_schema','update_states','read_context','get_member','set_member_alias','search_history','list_emoticons','search_emoticons','view_emoticon'}
+READS={'retrace_context','set_group_context','record_understanding','web_search','read_webpage','get_memory_schema','update_states','read_context','get_member','set_member_alias','search_history','list_emoticons','search_emoticons','view_emoticon'}
 def decode(raw):
  value=parse_json(raw,'worker_api')
  # Bounded normalization; never let outer fields override explicit arguments.
@@ -85,6 +87,28 @@ def _decision(call):
  return {'action':name,'text':args.get('text','')[:1200],'reply_parts':args.get('reply_parts'),'image_share':args.get('image_share'),'image_id':args.get('image_id'),'request_ids':args.get('request_ids',[]),'request_outcome':args.get('request_outcome'),'route_id':args.get('route_id'),'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'reason':str(args.get('reason',''))[:200]}
 def read(db,cfg,target,payload,call):
  name=call['name'];args=call['arguments']
+ if name=='retrace_context':
+  import orientation
+  query=args.get('query','')
+  if not isinstance(query,str) or len(query)>300:raise ValueError('invalid_retrace_query')
+  transcript=orientation.prepare(cfg,target,time.time(),payload.get('recent_target_messages',[]))
+  if query:
+   disk=archive.Archive(cfg['context_dir'])
+   try:hits=disk.search(target,query,limit=16)
+   finally:disk.close()
+   existing={r.get('event_key') for r in transcript['messages']}
+   for row in hits:
+    key=str(target)+':'+str(row['message_id'])
+    if key not in existing:transcript['messages'].append({**row,'event_key':key});existing.add(key)
+  payload['orientation_history']=transcript;payload['orientation_required']=True
+  if db is not None:
+   users={str(v['id']) for v in payload.get('member_profiles',[])}
+   users.update(str(v.get('speaker',v.get('user_id',''))) for v in transcript['messages'] if str(v.get('speaker',v.get('user_id',''))).isdigit())
+   payload['member_profiles']=participants.evidence(db,[{'user_id':user} for user in users])
+  return {'prepared':True,'coverage':transcript['coverage'],'instruction':'本群原话已放入orientation_history，请预读后set_group_context，不要先公开回复'}
+ if name=='set_group_context':
+  import orientation
+  return orientation.save(cfg,target,payload,args)
  if name in ('web_search','read_webpage'):
   import internet
   return internet.tool(cfg,name,args)

@@ -154,3 +154,12 @@ class UnifiedFeedTests(unittest.TestCase):
   self.assertTrue(any('QQ / 应用 / 理解' in line for line in shown))
   self.assertTrue(any('复制模式：' in line for line in shown))
   self.assertNotIn('│',shown);self.assertFalse(any('surf bot / 操作结果' in line for line in shown))
+
+
+class RetraceDisplayTests(unittest.TestCase):
+ def test_orientation_notes_render_in_unified_feed(self):
+  import json
+  from terminal_feed import format_lines
+  note={'topics':[{'text':'讨论运行方式','evidence_event_keys':['1:1']}],'referents':[{'expression':'那台','interpretation':'前文的电脑','certainty':'tentative','evidence_event_keys':['1:1']}],'open_interactions':[]}
+  rows=format_lines(['10-21 19:00:00 group retrace complete group=1 referents=1 notes='+json.dumps(note,ensure_ascii=False)],'应用',{'1':'测试群'})
+  self.assertIn('[回溯][测试群] 话题：讨论运行方式',rows[0]);self.assertIn('那台 → 前文的电脑（推测）',rows[1])

@@ -4,12 +4,26 @@ from pathlib import Path
 import chat_view,service_log
 
 STAMP=re.compile(r'^(\d{2}-\d{2} \d{2}:\d{2}:\d{2})')
+RETRACE=re.compile(r'group retrace complete group=(\S+) referents=\d+ notes=(.*)$')
 ANALYSIS=re.compile(r'worker understanding group=(\S+) request_id=\S+ observations=(.*)$')
 
 def format_lines(lines,source,groups=None):
  result=[];groups=groups or {}
  for raw in lines:
-  raw=service_log.clean(raw);match=ANALYSIS.search(raw)
+  raw=service_log.clean(raw)
+  retrace=RETRACE.search(raw)
+  if retrace:
+   try:notes=json.loads(retrace[2])
+   except (ValueError,TypeError):notes=None
+   if isinstance(notes,dict):
+    stamp=STAMP.match(raw);prefix=(stamp[1]+' ' if stamp else '')+'[回溯]['+chat_view.shorten(groups.get(retrace[1],retrace[1]))+'] '
+    for note in notes.get('topics',[]):result.append(prefix+'话题：'+str(note.get('text','') if isinstance(note,dict) else note))
+    for ref in notes.get('referents',[]):
+     if isinstance(ref,dict):result.append(prefix+'指代：'+str(ref.get('expression',''))+' → '+str(ref.get('interpretation',''))+'（'+{'confirmed':'确认','tentative':'推测','unknown':'未知'}.get(ref.get('certainty'),'未知')+'）')
+    for note in notes.get('open_interactions',[]):result.append(prefix+'待续：'+str(note.get('text','') if isinstance(note,dict) else note))
+    if not any(notes.values()):result.append(prefix+'预读完成，未建立确定话题或指代')
+    continue
+  match=ANALYSIS.search(raw)
   if match:
    try:notes=json.loads(match[2])
    except (ValueError,TypeError):notes=None

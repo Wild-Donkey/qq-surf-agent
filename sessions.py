@@ -10,6 +10,7 @@ class GroupSession:
     last_activity:float
     turns:list=field(default_factory=list)
     cached_memory:dict=field(default_factory=dict)
+    orientation:dict|None=None
 
     def recall(self,memory,user=None):
         key=str(user or '')
