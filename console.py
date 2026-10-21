@@ -4,7 +4,7 @@ import argparse,collections,concurrent.futures,json,os,queue,shlex,signal,subpro
 try:import curses
 except ImportError:curses=None
 from pathlib import Path
-import agent,qq,workflow,operator_control,service_log,completion,chat_view,avatar_palette,clipboard_image,log_scroll
+import agent,qq,workflow,operator_control,service_log,completion,chat_view,avatar_palette,clipboard_image,log_scroll,terminal_mouse
 ROOT=Path(__file__).resolve().parent
 HELP='''/groups  /use 群名或群号  /say 内容（或直接输入）  /takeover  /resume
 /paste  /worker prompt  /jobs  /status  /bot start|restart|stop  /helper status|start|wrap|stop
@@ -134,6 +134,8 @@ def run(screen):
  curses.curs_set(1);screen.timeout(100);screen.keypad(True)
  try:curses.mousemask(curses.ALL_MOUSE_EVENTS)
  except curses.error:pass
+ sys.stdout.write('\x1b[?1000h\x1b[?1006h');sys.stdout.flush()
+ mouse_reader=terminal_mouse.Reader()
  avatars=avatar_palette.AvatarPalette();styles=chat_view.Styles(avatars)
  controller=Controller();buffers=[collections.deque(maxlen=2000),collections.deque(maxlen=2000)];views=[log_scroll.Viewport(True),log_scroll.Viewport()];focus=0
  tails=[Tail(ROOT/'runtime/logs/qq-helper.log'),Tail(ROOT/'runtime/logs/surf-bot.log')]
@@ -186,8 +188,13 @@ def run(screen):
     try:screen.move(height-2,min(width-2,2+display_width(text[start:cursor])))
     except curses.error:pass
    screen.refresh()
-   try:key=screen.get_wch()
-   except curses.error:continue
+   key=mouse_reader.get(screen)
+   if key is None:continue
+   if isinstance(key,terminal_mouse.Mouse):
+    if 0<=key.y<height-8 and 0<=key.x<width:
+     focus=0 if key.x<(width-1)//2 else 1
+     if key.delta:views[focus].scroll(key.delta)
+    continue
    if key!='\t':completer.reset()
    if key in ('\n','\r',curses.KEY_ENTER):
     line=text.strip();text='';cursor=0
@@ -221,6 +228,7 @@ def run(screen):
    elif isinstance(key,str) and key.isprintable() and len(text)<12000:text=text[:cursor]+key+text[cursor:];cursor+=1
  except KeyboardInterrupt:pass
  finally:
+  sys.stdout.write('\x1b[?1006l\x1b[?1000l');sys.stdout.flush()
   avatars.close();pool.shutdown(wait=False,cancel_futures=True)
 
 def main():
