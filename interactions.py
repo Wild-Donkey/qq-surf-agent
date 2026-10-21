@@ -3,9 +3,9 @@ import hashlib,json,re,sqlite3,time
 from pathlib import Path
 import identities
 
-def member(cfg,group,alias,db=None):
+def member(cfg,group,alias,db=None,raw_id=False):
  registry=identities.Registry(cfg['context_dir'])
- try:user=registry.resolve(alias)
+ try:user=str(alias) if raw_id else registry.resolve(alias)
  finally:registry.close()
  if not user.isdigit() or user in ('0',str(cfg.get('bot_id',''))) or str(group).startswith('private:'):raise ValueError('interaction_target_invalid')
  found=db.execute('SELECT 1 FROM speaker_events WHERE group_id=? AND user_id=? LIMIT 1',(str(group),user)).fetchone() if db is not None else None

@@ -18,7 +18,7 @@ def prepare(db,cfg,group,decision,payload):
  now=time.time()
  recent=db.execute("SELECT a.delivery_id FROM clarification_attempts a JOIN deliveries d ON d.id=a.delivery_id WHERE a.group_id=? AND a.user_id=? AND a.question_key=? AND a.created>? AND d.status NOT IN ('failed','superseded','cancelled','expired','blocked_muted')",(str(group),user,key,now-300)).fetchone()
  if recent:return {'action':'wait','text':'','reason':'澄清已提出，等待当事人补充'}
- return {**decision,'action':'reply','text':'','reply_parts':[{'at':user},{'text':text.strip()}],'request_outcome':'needs_info','_clarification':{'user_id':user,'key':key,'question':text.strip()}}
+ return {**decision,'action':'reply','text':'','reply_parts':[{'at':decision['alias']},{'text':text.strip()}],'request_outcome':'needs_info','_clarification':{'user_id':user,'key':key,'question':text.strip()}}
 
 def bind(db,group,decision,delivery):
  item=decision.get('_clarification')

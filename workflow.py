@@ -208,6 +208,12 @@ def _register_and_backfill_group(db, group_id, cfg, api_cfg, now):
 
 def ingest(db, event, cfg, now=None, api_cfg=None):
     now = time.time() if now is None else now
+    import interactions
+    interaction=interactions.notice(event,cfg,now)
+    if interaction is False:return 'ignored_poke'
+    if interaction is not None:
+        event=interaction
+        service_log.event('surf-bot','received poke group='+str(event.get('group_id') or 'private')+' user='+str(event['user_id']))
     if private_chat.ingest(db,event,cfg,now):return "private_message"
     if moderation.ingest(db,event,cfg,now):return "moderation_notice"
     # Auto-accept group invitations directed at this bot (not member apply requests).
@@ -308,14 +314,14 @@ def dispatch(db, cfg, api_cfg, now=None):
     groups = configured_groups(cfg)
     jobs = db.execute("""SELECT d.*,c.source_group,c.text,c.images,c.kind,c.emoticon,c.reply_parts FROM deliveries d
         JOIN candidates c ON c.id=d.candidate_id WHERE d.status='approved' AND c.status='approved'
-        AND ((c.kind IN ('reply','merged_forward','moment_forward','image_share') AND d.created<=?) OR (c.kind NOT IN ('reply','merged_forward','moment_forward','image_share') AND d.created<=?))
-        ORDER BY CASE WHEN c.kind='reply' THEN 0 ELSE 1 END,d.id LIMIT 50""", (now-cfg.get('reply_delay_seconds',0),now-cfg.get('hold_seconds',120))).fetchall()
+        AND ((c.kind IN ('reply','poke','merged_forward','moment_forward','image_share') AND d.created<=?) OR (c.kind NOT IN ('reply','poke','merged_forward','moment_forward','image_share') AND d.created<=?))
+        ORDER BY CASE WHEN c.kind IN ('reply','poke') THEN 0 ELSE 1 END,d.id LIMIT 50""", (now-cfg.get('reply_delay_seconds',0),now-cfg.get('hold_seconds',120))).fetchall()
     sent = 0
     for job in jobs:
         target = job['target_group']
         if target not in groups or job['source_group'] not in groups:
             continue
-        if job['kind']=='reply' and str(job['source_group'])!=str(target):
+        if job['kind'] in ('reply','poke') and str(job['source_group'])!=str(target):
             with db:db.execute("UPDATE deliveries SET status='blocked_cross_group_reply' WHERE id=?",(job['id'],))
             continue
         intro=onboarding.is_introduction(db,target,job['candidate_id'])
@@ -345,7 +351,7 @@ def dispatch(db, cfg, api_cfg, now=None):
             continue
         paused=db.execute('SELECT until_time FROM operator_pause WHERE group_id=?',(target,)).fetchone()
         if paused and paused[0]>now:continue
-        if job['kind'] in ('reply','merged_forward','moment_forward','image_share') and now-job['created']>180:
+        if job['kind'] in ('reply','poke','merged_forward','moment_forward','image_share') and now-job['created']>180:
             with db:db.execute("UPDATE deliveries SET status='expired',updated=? WHERE id=?",(now,job['id']))
             continue
         # Serialize rate-limit accounting and claims across workers/processes.
@@ -357,11 +363,11 @@ def dispatch(db, cfg, api_cfg, now=None):
         day = db.execute("SELECT count(*) FROM deliveries WHERE target_group=? AND status IN ('sent','uncertain') AND updated>?",(target,now-86400)).fetchone()[0]
         global_day = db.execute("SELECT count(*) FROM deliveries WHERE status IN ('sent','uncertain') AND updated>?",(now-86400,)).fetchone()[0]
         last = db.execute("SELECT max(updated) FROM deliveries WHERE target_group=? AND status IN ('sent','uncertain')",(target,)).fetchone()[0]
-        cooldown=cfg.get('reply_cooldown_seconds',0) if job['kind']=='reply' else cfg.get('group_cooldown_seconds',3600)
+        cooldown=cfg.get('reply_cooldown_seconds',0) if job['kind'] in ('reply','poke') else cfg.get('group_cooldown_seconds',3600)
         if job['kind'] in ('merged_forward','moment_forward','image_share'):cooldown=cfg.get('merged_forward',{}).get('cooldown_seconds',60)
-        if job['kind']!='reply':
-            last=db.execute("SELECT max(d.updated) FROM deliveries d JOIN candidates c ON c.id=d.candidate_id WHERE d.target_group=? AND c.kind!='reply' AND d.status IN ('sent','uncertain')",(target,)).fetchone()[0]
-            shares=db.execute("SELECT count(*) FROM deliveries d JOIN candidates c ON c.id=d.candidate_id WHERE d.target_group=? AND c.kind!='reply' AND d.status IN ('sent','uncertain') AND d.updated>?",(target,now-86400)).fetchone()[0]
+        if job['kind'] not in ('reply','poke'):
+            last=db.execute("SELECT max(d.updated) FROM deliveries d JOIN candidates c ON c.id=d.candidate_id WHERE d.target_group=? AND c.kind NOT IN ('reply','poke') AND d.status IN ('sent','uncertain')",(target,)).fetchone()[0]
+            shares=db.execute("SELECT count(*) FROM deliveries d JOIN candidates c ON c.id=d.candidate_id WHERE d.target_group=? AND c.kind NOT IN ('reply','poke') AND d.status IN ('sent','uncertain') AND d.updated>?",(target,now-86400)).fetchone()[0]
             share_cap=cfg.get('max_shares_per_group_day',3)
             if share_cap is not None and shares>=share_cap:
                 db.rollback();continue
@@ -398,7 +404,12 @@ def dispatch(db, cfg, api_cfg, now=None):
             if not intro and not participants.humans_recent(db,target,cfg):
                 with db:db.execute("UPDATE deliveries SET status='approved' WHERE id=?",(job['id'],))
                 continue
-            if job['kind']=='image_share':
+            if job['kind']=='poke':
+                import interactions
+                user=interactions.member(cfg,target,job['text'],db,raw_id=True)
+                agent.onebot_call(api_cfg,'group_poke',{'group_id':int(target),'user_id':int(user)})
+                result={'message_id':'poke:delivery:'+str(job['id'])};text='[交互通知：自己戳了群友一下]';parts=[{'type':'text','data':{'text':text}}]
+            elif job['kind']=='image_share':
                 import image_sharing
                 parts=image_sharing.send_parts(db,cfg,job['source_group'],target,job['text'])
                 result=agent.onebot_call(api_cfg,'send_group_msg',{'group_id':int(target),'message':parts})
@@ -629,7 +640,9 @@ def main():
                         with db:
                             db.execute('INSERT OR REPLACE INTO metrics VALUES (?,?)',('last_tick',str(time.time())))
                     except Exception as exc:
+                        import traceback
                         print('工作周期失败：'+type(exc).__name__,flush=True)
+                        traceback.print_exc()
                         alerts.record(db,'worker_'+type(exc).__name__,'后台工作周期发生异常，服务会在下一周期继续。')
                     stop.wait(cfg.get('tick_seconds',30))
             finally:

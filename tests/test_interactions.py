@@ -56,3 +56,9 @@ class InteractionTests(unittest.TestCase):
   with patch('social.load_model',return_value={'enabled':True,'api_key':'fake'}),patch('social.generate_text',return_value=(raw,{})),patch('agent.onebot_call',return_value=[{'user_id':7}]) as api:
    private_chat.tick(self.db,self.cfg,{},now+10)
   self.assertEqual([call.args[1] for call in api.call_args_list],['get_friend_list'])
+
+ def test_numeric_alias_cannot_redirect_stored_poke_recipient(self):
+  registry=identities.Registry(self.tmp.name);registry.set('8','7','initial');registry.close()
+  workflow.ingest(self.db,{**self.event,'user_id':8,'message_id':124},self.cfg,self.now)
+  self.assertEqual(interactions.member(self.cfg,'1','7',self.db),'8')
+  self.assertEqual(interactions.member(self.cfg,'1','7',self.db,raw_id=True),'7')

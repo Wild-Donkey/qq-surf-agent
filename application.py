@@ -146,7 +146,7 @@ def read(db,cfg,target,payload,call):
  if name in ('get_member','set_member_alias'):
   import identities
   registry=identities.Registry(cfg['context_dir'])
-  try:user=registry.resolve(args.get('alias',args.get('user_id','')))
+  try:user=registry.resolve(args['alias']) if 'alias' in args else str(args.get('user_id',''))
   finally:registry.close()
   allowed={str(v['id']) for v in payload.get('member_profiles',[])}
   if user not in allowed:raise ValueError('member_outside_context')
