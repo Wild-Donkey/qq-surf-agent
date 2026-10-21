@@ -84,3 +84,47 @@ class StickerLibraryTests(unittest.TestCase):
   decision={'action':'reply','text':'仍然可以自然回复'}
   social.apply_decision(db,{'target_group':'1','event_key':'1:test'},decision,{},cfg,1)
   self.assertEqual(db.execute('SELECT text FROM candidates').fetchone()[0],decision['text']);db.close()
+
+ def _dispatch_cfg(self):
+  return {'bot_id':'99','mode':'live','groups':[{'id':'1','name':'A'}],'context_dir':str(self.root),
+          'max_per_group_day':None,'max_total_day':None,'interaction':{'enabled':False}}
+ def _queued_delivery(self,db,identity,text):
+  cfg=self._dispatch_cfg()
+  workflow.ingest(db,{'post_type':'message','message_type':'group','group_id':1,'user_id':7,'message_id':5,
+                      'message':[{'type':'text','data':{'text':'就这？'}}]},cfg,99)
+  queue_cfg={'context_dir':str(self.root),'groups':[{'id':'1'}],'interaction':{'enabled':True}}
+  decision={'action':'reply','text':text,'emoticon':{'kind':'sticker','id':identity}}
+  social.apply_decision(db,{'target_group':'1','event_key':'1:5','source_group':'1'},decision,{},queue_cfg,100)
+ def test_dispatch_sends_sticker_on_its_own_bubble(self):
+  key=self.asset();identity=emoticons.learn(self.root,'1','','猫猫嘲讽',key,tags=['嘲讽'])
+  db=workflow.connect(':memory:');cfg=self._dispatch_cfg()
+  self._queued_delivery(db,identity,'你这操作离谱')
+  sent=[]
+  def call(_,action,payload=None):
+   if action=='get_login_info':return {'user_id':99}
+   if action=='send_group_msg':sent.append(payload['message']);return {'message_id':42}
+   raise AssertionError(action)
+  with patch('agent.onebot_call',side_effect=call),patch('participants.humans_recent',return_value=True):
+   self.assertEqual(workflow.dispatch(db,cfg,{},101),1)
+  self.assertEqual(len(sent),2)
+  self.assertEqual([p['type'] for p in sent[0]],['text'])
+  self.assertEqual(sent[0][0]['data']['text'],'你这操作离谱')
+  self.assertEqual([p['type'] for p in sent[1]],['image'])
+  self.assertTrue(sent[1][0]['data']['file'].startswith('base64://'))
+  db.close()
+ def test_dispatch_allows_pure_sticker_reply(self):
+  key=self.asset();identity=emoticons.learn(self.root,'1','','猫猫鄙视',key,tags=['鄙视'])
+  db=workflow.connect(':memory:');cfg=self._dispatch_cfg()
+  self._queued_delivery(db,identity,'')
+  sent=[]
+  def call(_,action,payload=None):
+   if action=='get_login_info':return {'user_id':99}
+   if action=='send_group_msg':sent.append(payload['message']);return {'message_id':43}
+   raise AssertionError(action)
+  with patch('agent.onebot_call',side_effect=call),patch('participants.humans_recent',return_value=True):
+   self.assertEqual(workflow.dispatch(db,cfg,{},101),1)
+  self.assertEqual(len(sent),1)
+  self.assertEqual([p['type'] for p in sent[0]],['image'])
+  self.assertEqual(db.execute("SELECT status FROM deliveries").fetchone()[0],'sent')
+  self.assertEqual(db.execute("SELECT count(*) FROM events WHERE text LIKE '%[大表情]%'").fetchone()[0],1)
+  db.close()

@@ -1,12 +1,15 @@
-import unittest
+import hashlib,tempfile,unittest
+from pathlib import Path
 from unittest.mock import patch
-import workflow,moderation
+import emoticons,workflow,moderation
 
 class ModerationTests(unittest.TestCase):
  def setUp(self):
   self.db=workflow.connect(':memory:')
   self.cfg={'bot_id':1,'groups':[{'id':10}],'mode':'live','moderation':{'appeal_enabled':True}}
- def tearDown(self):self.db.close()
+  self._no_model=patch('social.load_model',return_value={'enabled':False});self._no_model.start()
+ def tearDown(self):
+  self._no_model.stop();self.db.close()
  def notice(self,t=100,duration=500,sub='ban',operator=2):
   return {'post_type':'notice','notice_type':'group_ban','group_id':10,'user_id':1,'operator_id':operator,'time':t,'duration':duration,'sub_type':sub}
  def status(self):
@@ -137,6 +140,31 @@ class ModerationTests(unittest.TestCase):
   with patch('moderation.agent.onebot_call',side_effect=call),patch('social.load_model',return_value=model),patch('social.generate_text',side_effect=TimeoutError()):
    self.assertEqual(moderation.flush(self.db,self.cfg,{},101),1)
   self.assertEqual(sent,[moderation.APPEAL])
+ def test_appeal_uses_global_sticker_as_second_message(self):
+  tmp=tempfile.TemporaryDirectory();root=Path(tmp.name)
+  key=hashlib.sha256(b'cross-group-sticker').hexdigest()+'.jpg'
+  (root/'media').mkdir();(root/'media'/key).write_bytes(b'sticker')
+  # Sticker was collected in another group; the appeal pool is global.
+  identity=emoticons.learn(root,'999','','嘲讽大表情',key,tags=['嘲讽','鄙视'])
+  cfg=dict(self.cfg);cfg['context_dir']=str(root)
+  moderation.ingest(self.db,self.notice(100,duration=100000),cfg,100)
+  messages=[]
+  def call(_,action,payload=None):
+   if action=='get_login_info':return {'user_id':1}
+   if action=='get_group_member_list':return [{'user_id':2,'role':'owner'}]
+   if action=='get_friend_list':return [{'user_id':2}]
+   if action=='send_private_msg':messages.append(payload['message']);return {'message_id':77}
+   raise AssertionError(action)
+  model={'enabled':True,'model':'m','base_url':'http://x','api_key':'fake'}
+  reply='{"text":"哪条群规？给个说法","sticker_id":"%s"}'%identity
+  with patch('moderation.agent.onebot_call',side_effect=call),patch('social.load_model',return_value=model),patch('social.generate_text',return_value=(reply,{'prompt_tokens':9,'completion_tokens':7})):
+   self.assertEqual(moderation.flush(self.db,cfg,{},101),1)
+  self.assertEqual(len(messages),2)
+  self.assertEqual([p['type'] for p in messages[0]],['text'])
+  self.assertEqual(messages[0][0]['data']['text'],'哪条群规？给个说法')
+  self.assertEqual([p['type'] for p in messages[1]],['image'])
+  self.assertTrue(messages[1][0]['data']['file'].startswith('base64://'))
+  tmp.cleanup()
  def test_half_hour_check_reopens_appeal(self):
   moderation.ingest(self.db,self.notice(100,duration=100000),self.cfg,100)
   members=[{'user_id':1,'shut_up_timestamp':99999},{'user_id':2,'role':'owner'}]

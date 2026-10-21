@@ -368,6 +368,8 @@ def dispatch(db, cfg, api_cfg, now=None):
         # Big stickers always ride their own bubble (or a pure-sticker reply); small faces stay inline.
         sticker_parts=emoticons.segments(cfg['context_dir'],target,emoticon) if emoticon and emoticon.get('kind')=='sticker' else []
         parts = [{'type':'text','data':{'text':text}}] if text else []
+        if emoticon and emoticon.get('kind')=='face':
+            parts.extend(emoticons.segments(cfg['context_dir'],target,emoticon))
         if cfg.get('send_images', True):
             parts.extend({'type':'image','data':{'file':image['url']}} for image in json.loads(job['images']))
         try:
@@ -414,7 +416,7 @@ def dispatch(db, cfg, api_cfg, now=None):
                 except Exception as sticker_exc:
                     alerts.record(db,'delivery_sticker_failed','文字已发出，但配套大表情发送失败。',scope=str(target),details={'target_group':str(target),'delivery_id':job['id'],'error':type(sticker_exc).__name__})
             if cfg.get('interaction',{}).get('enabled'):
-                memory=MarkdownMemory(cfg['context_dir'],ROOT/'context')
+                memory=MarkdownMemory(cfg.get('context_dir',ROOT/'context'))
                 try:memory.add_note('group',target,'自己最近发言：'+(text or '[大表情]'))
                 finally:memory.close()
             if emoticon:
