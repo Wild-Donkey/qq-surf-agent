@@ -1,5 +1,7 @@
 """Format raw Helper lines without changing durable original logs."""
-import colorsys,curses,hashlib,re,functools
+import colorsys,hashlib,re,functools
+try:import curses
+except ImportError:curses=None
 from dataclasses import dataclass
 STAMP=r'\d{2}-\d{2} \d{2}:\d{2}:\d{2}'
 PREFIX=re.compile(r'^(?P<time>'+STAMP+r')(?:\s+'+STAMP+r')?\s*(?:\[(?P<level>\w+)\]\s*[^|]*\|\s*)?(?P<body>.*)$')
@@ -48,6 +50,7 @@ def distance(a,b):return sum((x-y)**2 for x,y in zip(a,b))
 class Styles:
  def __init__(self,avatars):
   self.avatars=avatars;self.pairs={};self.backgrounds={};self.colors=0
+  if curses is None:return
   try:
    if curses.has_colors():curses.start_color();self.colors=curses.COLORS
   except curses.error:pass

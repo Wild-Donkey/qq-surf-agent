@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Two live log panes and a non-blocking local operations prompt (stdlib only)."""
-import argparse,collections,concurrent.futures,curses,json,os,queue,shlex,signal,subprocess,sys,time,unicodedata
+import argparse,collections,concurrent.futures,json,os,queue,shlex,signal,subprocess,sys,time,unicodedata
+try:import curses
+except ImportError:curses=None
 from pathlib import Path
 import agent,qq,workflow,operator_control,service_log,completion,chat_view,avatar_palette,clipboard_image
 ROOT=Path(__file__).resolve().parent
@@ -211,9 +213,13 @@ def run(screen):
   avatars.close();pool.shutdown(wait=False,cancel_futures=True)
 
 def main():
- p=argparse.ArgumentParser(description='QQ surf terminal console');p.add_argument('--command',help='执行一条控制台命令后退出');p.add_argument('--helper-wrap',action='store_true',help='将当前QQ实例重启为持久日志启动');args=p.parse_args()
+ p=argparse.ArgumentParser(description='QQ surf terminal console');p.add_argument('--lite',action='store_true',help='逐行纯文本模式，只显示简化聊天，不加载颜色和bot日志');p.add_argument('--command',help='执行一条控制台命令后退出');p.add_argument('--helper-wrap',action='store_true',help='将当前QQ实例重启为持久日志启动');args=p.parse_args()
  if args.command:print(Controller().execute(args.command));return
  if args.helper_wrap:print(Controller().execute('/helper wrap'))
+ if args.lite:
+  import lite_console
+  lite_console.run();return
  if not sys.stdin.isatty():raise SystemExit('交互模式需要终端；自动化请用 --command')
+ if curses is None:raise SystemExit('当前Python未提供curses，请使用 --lite')
  curses.wrapper(run)
 if __name__=='__main__':main()
