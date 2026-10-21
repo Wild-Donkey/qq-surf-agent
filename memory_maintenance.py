@@ -1,5 +1,5 @@
 """Durable incremental semantic memory jobs, independent of chat output and cache flushes."""
-import json, sqlite3, time
+import json, re, sqlite3, time
 from pathlib import Path
 import archive, memory_store, model_gate
 from protocol import parse_json
@@ -128,7 +128,9 @@ def tick(db,cfg,invoke=None,now=None):
   return True
  except Exception as exc:
   if 'job' in locals() and job:
-   with queue:queue.execute('UPDATE jobs SET error=?,next_attempt=? WHERE group_id=?',(type(exc).__name__,now+60,job['group_id']))
+   detail=str(exc)
+   code=type(exc).__name__+(':'+detail[:160] if re.fullmatch(r'[A-Za-z0-9_.$:, \[\]-]{1,200}',detail) else '')
+   with queue:queue.execute('UPDATE jobs SET error=?,next_attempt=? WHERE group_id=?',(code,now+60,job['group_id']))
   raise
  finally:queue.close()
 
