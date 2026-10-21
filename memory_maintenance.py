@@ -109,7 +109,9 @@ def tick(db,cfg,invoke=None,now=None):
    if invoke:value=invoke(payload)
    else:
     import social
-    slot=model_gate.reserve(db,cfg,background=True)
+    # Memory checkpoints must progress even in a continuously busy group.
+    # The shared QPS gate still bounds starts across chat and maintenance.
+    slot=model_gate.reserve(db,cfg)
     if slot is None:return False
     try:
      model=dict(social.load_model(cfg));model['_text_format']={'type':'json_object'};model['max_completion_tokens']=max(4096,int(model.get('max_completion_tokens',4096)))
