@@ -1,5 +1,7 @@
 import moderation
 import archive
+import operator_control
+import service_log
 import emoticons
 import application
 import model_gate
@@ -23,7 +25,8 @@ from memory import MarkdownMemory,excerpt
 from sessions import SessionPool
 
 ROOT=Path(__file__).resolve().parent
-SYSTEM='''你是一个已公开说明是 AI bot 的普通群友，喜欢搬屎（抽象烂梗、离谱见闻、有意思的素材），按群内语境自然聊天。
+SYSTEM='''operator_prompts 是本机运营者直接提交给你的本轮任务，不是群友消息；结合当前群上下文执行，仍只能通过应用开放接口行动，不得改变接收群或绕过应用发送规则。
+你是一个已公开说明是 AI bot 的普通群友，喜欢搬屎（抽象烂梗、离谱见闻、有意思的素材），按群内语境自然聊天。
 你没有固定叫「石头」；之前那是错误介绍，不要沿用。群友喊Luna时自然接话，称呼可以随群内约定。
 每一条消息都要读，不论是否提到你、是否与你有关。读完再决定是否参与；自然的短句接梗、调侃、回应都可以，不必等到能提供知识才开口。
 pending_requests 是尚未处理的明确请求，优先级高于普通聊天，不能被新消息覆盖或略过。处理时在finish_turn中带request_ids（真实event_key数组）和request_outcome（completed/declined/needs_info）。转发请求必须实际调用转发接口才可completed；无法执行就明确解释或追问，不能用无关接梗替代。普通无关闲聊可以选择不回应。拒绝尬聊：没有自然话头就wait，不硬接梗、不复述原话、不泛泛附和，不强行反问和续话，不反复报到、解释自己或刷“收到”。阅读全部消息不等于每批都必须发言。
@@ -338,6 +341,7 @@ def tick(db,cfg,sessions=None):
             with db:db.execute('INSERT OR REPLACE INTO metrics VALUES (?,?)',('model_state','waiting_for_api_key'))
             return
         now=time.time()
+        operator_control.wake(db)
         request_queue.sync(db,cfg,now)
         # Retire legacy mirrored jobs before they can enter a conversation batch.
         with db:
@@ -370,7 +374,9 @@ def tick(db,cfg,sessions=None):
         operator_paused=moderation.is_muted(db,job["target_group"],now) or bool(paused and paused[0]>now)
         activity=db.execute('SELECT last_member_message FROM group_activity WHERE group_id=?',(job['target_group'],)).fetchone()
         if not activity or not 0<=now-activity[0]<=cfg.get('inactive_group_days',14)*86400:
-            with db:db.execute("UPDATE social_jobs SET status='inactive_group' WHERE event_key=? AND target_group=?",(job['event_key'],job['target_group']))
+            with db:
+                db.execute("UPDATE social_jobs SET status='inactive_group' WHERE event_key=? AND target_group=?",(job['event_key'],job['target_group']))
+                if job['event_key'].startswith('operator:'):db.execute("UPDATE operator_prompts SET status='blocked',error='group_inactive',updated=? WHERE id=?",(now,job['event_key'].split(':',1)[1]))
             return
         call_id=model_gate.reserve(db,cfg,now)
         if call_id is None:return
@@ -388,6 +394,8 @@ def tick(db,cfg,sessions=None):
         try:
             task=sessions.task(db,cfg,job,now)
             payload,candidates=choose(db,cfg,memory,job,task)
+            payload['operator_prompts']=operator_control.pending(db,job['target_group'])
+            service_log.event('surf-bot','worker processing group='+str(job['target_group'])+' batch='+str(len(batch))+' operator_prompts='+str(len(payload['operator_prompts'])))
             payload['unread_messages']=[]
             for item in batch:
                 view=message_view(db,memory,item['source_group'],item['trigger_text'],item['trigger_images'],item['user_id'],item['trigger_reply'],json.loads(item['trigger_mentions']))
@@ -468,6 +476,8 @@ def tick(db,cfg,sessions=None):
             if more and not addressed:decision=dict(decision,action='wait',text='',reason='本窗口还有未读消息，读完后再接话')
             delivery=apply_decision(db,batch[-1],decision,candidates,cfg,now)
             request_queue.bind(db,job['target_group'],addressed,decision,delivery,time.time())
+            operator_control.complete(db,payload.get('operator_prompts',[]),job['target_group'],decision['action'])
+            service_log.event('surf-bot','worker decided group='+str(job['target_group'])+' action='+decision['action']+' delivery='+str(delivery))
             proposal=decision.get('image_share')
             if decision['action'] in ('reply','wait') and not operator_paused and not more and (not payload.get('pending_requests') or addressed) and isinstance(proposal,dict):
                 if proposal.get('quality')=='natural' and isinstance(proposal.get('reason'),str) and 1<=len(proposal['reason'])<=200:
@@ -500,6 +510,7 @@ def tick(db,cfg,sessions=None):
                 db.execute('INSERT OR REPLACE INTO metrics VALUES (?,?)',('model_retry_after',str(now+pause)))
             hint='请检查 ChatGPT 授权、订阅限额或连接状态。' if model.get('provider')=='chatgpt' else '若提示额度不足，请检查 API 项目余额。'
             details=exc.details if isinstance(exc,ProtocolError) else {'stage':'chat_turn','error':type(exc).__name__,'message':err_msg}
+            service_log.event('surf-bot','worker failed group='+str(job['target_group'])+' code='+error)
             alerts.record(db,'model_'+error,'模型输出格式异常，自动重试中。' if isinstance(exc,ProtocolError) else '模型调用失败，重试中。',details=details)
         with db:
             db.execute("DELETE FROM social_jobs WHERE created<? AND status!='pending'",(now-48*3600,))

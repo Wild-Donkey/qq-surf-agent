@@ -25,6 +25,8 @@ import social
 import alerts
 import usage_report
 import onboarding
+import operator_control
+import service_log
 import participants
 from memory import MarkdownMemory
 from sessions import SessionPool
@@ -64,6 +66,7 @@ def connect(path):
         db.execute('ALTER TABLE candidates ADD COLUMN emoticon TEXT')
     if 'deadline_reply' not in {r[1] for r in db.execute('PRAGMA table_info(deliveries)')}:
         db.execute('ALTER TABLE deliveries ADD COLUMN deadline_reply INTEGER DEFAULT 0')
+    operator_control.ensure_schema(db)
     private_chat.ensure_schema(db)
     moderation.ensure_schema(db)
     social.ensure_schema(db)
@@ -416,6 +419,7 @@ def dispatch(db, cfg, api_cfg, now=None):
                 finally:memory.close()
             if emoticon:
                 emoticons.mark_used(cfg['context_dir'],target,emoticon)
+            service_log.event('surf-bot','delivery sent id='+str(job['id'])+' group='+str(target)+' kind='+str(job['kind'])+' message_id='+str(result['message_id']))
             sent += 1
         except Exception as exc:
             with db:
@@ -503,6 +507,8 @@ def handler(db_path, cfg, secret, api_loader=None):
                     pass
                 with closing(connect(db_path)) as db:
                     result=ingest(db,event,current_config(),api_cfg=current_api())
+                    if event.get('post_type') in ('message','notice','request'):
+                        service_log.event('surf-bot','event '+str(event.get('post_type'))+' group='+str(event.get('group_id',''))+' user='+str(event.get('user_id',''))+' result='+str(result))
                     db.execute('INSERT OR REPLACE INTO metrics VALUES (?,?)',('last_event',str(time.time())))
                     db.commit()
                 self.send_response(200); self.end_headers(); self.wfile.write(b'{}')
@@ -571,6 +577,7 @@ def main():
                 except Exception as exc:
                     alerts.record(db,'startup_history_failed','重启时补读群消息失败。',scope=group,details={'error':type(exc).__name__})
             sessions=SessionPool()
+            service_log.event('surf-bot','worker started mode='+cfg.get('mode','preview'))
             print('群间 workflow 已启动，监听127.0.0.1:{}，模式{}'.format(cfg.get('port',8766),cfg.get('mode','preview')),flush=True)
             try:
                 while not stop.is_set():

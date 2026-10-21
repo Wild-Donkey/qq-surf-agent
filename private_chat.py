@@ -1,4 +1,5 @@
 """Durable, recipient-bound friend conversations; never mixed into group workers."""
+import service_log
 import json,time
 from pathlib import Path
 import agent,alerts,application,model_gate,social,bot_identity,speech
@@ -91,6 +92,7 @@ def tick(db,cfg,api,now=None):
     with db:
      db.execute("UPDATE private_deliveries SET status='sent',message_id=? WHERE user_id=? AND trigger_id=?",(str(result['message_id']),uid,last))
      db.execute("INSERT OR IGNORE INTO private_messages VALUES (?,?,?,?,?,'out','sent',0)",(uid,'bot:'+str(result['message_id']),time.time(),text,'[]'))
+  service_log.event('surf-bot','private turn user='+uid+' action='+decision['action'])
   with db:
    for mid in ids:db.execute("UPDATE private_messages SET status='read' WHERE user_id=? AND message_id=?",(uid,mid))
  except Exception as exc:

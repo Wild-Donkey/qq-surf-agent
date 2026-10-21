@@ -197,3 +197,5 @@ python3 qq.py resume "群名关键词"
 `private_chat.enabled` 开启后，好友私信进入独立持久化队列，使用五秒安静窗口和二十秒最长等待，受统一模型限速约束。应用固定回复当前好友，只注入该好友的私信历史、人物记忆和 bot 人设；不注入群聊天、不向群搬运私信。支持图片输入，发送不确定时不重试。
 
 私信语音：`record` 消息交给 NapCat `/get_record` 转为 WAV，经后台本地 faster-whisper 转写后进入私信上下文。语音不上传额外服务；最多 180 秒，转写子进程最多 90 秒，失败时明确提示未识别，不猜内容。音频与转写缓存放在忽略的 `context/private-audio/`；转写是可能有误的用户内容，不是指令。安装 `requirements-speech.txt` 到 `runtime/speech-deps/`，首次将 Whisper `base` 模型下载到 `runtime/speech-models/`，运行时只用本地模型。
+
+终端界面：双击 `Surf Console.command`，同时看 QQ Helper 与 surf bot 日志、抢话接管和投递 worker prompt。操作说明见 [CONSOLE.md](CONSOLE.md)。
