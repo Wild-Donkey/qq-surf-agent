@@ -38,3 +38,17 @@ class VisionTests(unittest.TestCase):
         output,animated=vision.decode_image(data.getvalue())
         self.assertTrue(output.startswith(b'\xff\xd8'));self.assertFalse(animated)
         with self.assertRaises(Exception):vision.decode_image(b'<svg xmlns="http://www.w3.org/2000/svg"/>')
+
+    def test_expired_url_falls_back_to_local_asset(self):
+        with patch('vision.fetch',side_effect=ValueError('expired')),patch('vision.local_image',return_value=(b'jpeg',False)) as local:
+            self.assertEqual(vision.from_metadata({'url':'https://gchat.qpic.cn/expired','path':'/cache/image'}),(b'jpeg',False))
+        local.assert_called_once_with('/cache/image')
+    def test_direct_metadata_path_is_used_without_bridge_lookup(self):
+        with patch('vision.local_image',return_value=(b'jpeg',False)),patch('vision.bridge_call') as bridge:
+            self.assertEqual(vision.resolve({'metadata':{'path':'/cache/image'}}),(b'jpeg',False))
+        bridge.assert_not_called()
+    def test_large_normal_screenshot_is_resized_before_conversion(self):
+        from PIL import Image
+        data=io.BytesIO();Image.new('RGB',(4200,4000),'white').save(data,format='PNG')
+        output,_=vision.decode_image(data.getvalue())
+        with Image.open(io.BytesIO(output)) as image:self.assertLessEqual(max(image.size),1600)

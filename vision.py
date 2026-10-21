@@ -12,7 +12,8 @@ import urllib.request
 import warnings
 
 ROOT=Path(__file__).resolve().parent
-MAX_BYTES=8*1024*1024
+MAX_BYTES=32*1024*1024
+MAX_PIXELS=64_000_000
 _CAPTURE=ContextVar("qq_image_original",default=None)
 
 
@@ -35,12 +36,14 @@ def decode_image(raw):
     with warnings.catch_warnings():
         warnings.simplefilter('error',Image.DecompressionBombWarning)
         with Image.open(io.BytesIO(raw)) as image:
-            if image.format not in ('JPEG','PNG','GIF','WEBP') or image.width*image.height>16_000_000:
+            if image.format not in ('JPEG','PNG','GIF','WEBP') or image.width*image.height>MAX_PIXELS:
                 raise ValueError('unsupported_or_oversized_image')
             source_format=image.format
             image.seek(0)  # Animated memes: first frame only, reported explicitly to the worker.
             animated=bool(getattr(image,'is_animated',False))
-            image=image.convert('RGBA');image.thumbnail((1600,1600))
+            if source_format=='JPEG':image.draft('RGB',(1600,1600))
+            image.thumbnail((1600,1600))
+            image=image.convert('RGBA')
             background=Image.new('RGB',image.size,'white');background.paste(image,mask=image.getchannel('A'))
             out=io.BytesIO();background.save(out,format='JPEG',quality=88)
             capture=_CAPTURE.get()
@@ -49,6 +52,7 @@ def decode_image(raw):
 
 
 def fetch(url):
+    if url.startswith('http://gchat.qpic.cn/'):url='https://'+url[7:]
     if not allowed(url):raise ValueError('untrusted_image_host')
     request=urllib.request.Request(url,headers={'User-Agent':'QQ-Surf-Agent/1.0'})
     with urllib.request.build_opener(SafeRedirect()).open(request,timeout=15) as response:
@@ -99,15 +103,19 @@ def local_image(path):
 
 
 def from_metadata(data,allow_lookup=True):
+    failures=[]
     url=str(data.get('url',''))
-    if url.startswith('http://gchat.qpic.cn/'):url='https://'+url[7:]
-    if url and allowed(url):return fetch(url)
     path=data.get('path') or data.get('file')
-    if path and str(path).startswith('/'):return local_image(path)
-    if path and allowed(str(path)):return fetch(str(path))
+    for candidate in dict.fromkeys(str(v) for v in (url,path) if v):
+        try:
+            if candidate.startswith('http://gchat.qpic.cn/') or allowed(candidate):return fetch(candidate)
+            if candidate.startswith('/'):return local_image(candidate)
+        except Exception as exc:failures.append(exc)
     file=str(data.get('file') or data.get('file_id') or '')
     if allow_lookup and file and len(file)<=1024 and not any(c in file for c in '/\\\x00:'):
-        return from_metadata(bridge_call('get_image',{'file':file}),False)
+        try:return from_metadata(bridge_call('get_image',{'file':file}),False)
+        except Exception as exc:failures.append(exc)
+    if failures:raise failures[-1]
     raise ValueError('qq_image_metadata_has_no_usable_asset')
 
 
@@ -117,6 +125,9 @@ def resolve(item):
         try:return fetch(item['url'])
         except Exception as exc:first=exc
     metadata=item.get('metadata',{})
+    if metadata:
+        try:return from_metadata(metadata,False)
+        except Exception as exc:first=exc
     file=str(metadata.get('file') or metadata.get('file_id') or '')
     if file and len(file)<=1024 and not any(c in file for c in '/\\\x00:'):
         try:return from_metadata(bridge_call('get_image',{'file':file}),False)

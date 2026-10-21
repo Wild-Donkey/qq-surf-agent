@@ -21,3 +21,9 @@ class LiteTests(unittest.TestCase):
   read=Mock();read.__doc__='readline';read.get_line_buffer.return_value='/wor';read.get_endidx.return_value=4
   lite_console.setup_completion(read);callback=read.set_completer.call_args.args[0]
   self.assertEqual(callback('',0),'/worker ');self.assertIsNone(callback('',1))
+
+ def test_async_log_erases_prompt_without_blank_prompt_line(self):
+  import collections
+  out=io.StringIO();out.isatty=lambda:True
+  lite_console.print_chat_batch(out,collections.deque(['聊天消息']),True)
+  self.assertEqual(out.getvalue(),'\r  \r聊天消息\n> ')

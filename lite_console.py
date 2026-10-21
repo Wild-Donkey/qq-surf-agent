@@ -22,6 +22,13 @@ def setup_completion(readline):
  if 'libedit' in (readline.__doc__ or ''):readline.parse_and_bind('bind ^I rl_complete')
  else:readline.parse_and_bind('tab: complete')
 
+def print_chat_batch(output,pending,reading):
+ # Empty two-character prompt: erase in place without adding a scrollback line.
+ if reading and getattr(output,'isatty',lambda:False)():output.write('\r  \r')
+ while pending:output.write(pending.popleft()+'\n')
+ if reading:output.write('> ')
+ output.flush()
+
 def run(controller=None,input_fn=None,output=None):
  from console import Controller,Tail
  controller=controller or Controller();input_fn=input_fn or input;output=output or sys.stdout
@@ -43,10 +50,7 @@ def run(controller=None,input_fn=None,output=None):
    if reading.is_set() and readline and readline.get_line_buffer():continue
    if pending:
     with printing:
-     if reading.is_set():output.write('\n')
-     while pending:output.write(pending.popleft()+'\n')
-     if reading.is_set():output.write('> ')
-     output.flush()
+     print_chat_batch(output,pending,reading.is_set())
  thread=threading.Thread(target=follow,name='lite-chat-log',daemon=True);thread.start()
  try:
   while True:
