@@ -10,7 +10,7 @@ def connect(cfg):
  root=Path(cfg['context_dir']);root.mkdir(parents=True,exist_ok=True)
  db=sqlite3.connect(root/'memory-maintenance.sqlite3',timeout=20);db.row_factory=sqlite3.Row
  db.execute('PRAGMA journal_mode=WAL')
- db.executescript('''CREATE TABLE IF NOT EXISTS blocked_ranges(group_id TEXT,start_id INTEGER,end_id INTEGER,reason TEXT,created REAL,PRIMARY KEY(group_id,start_id,end_id));CREATE TABLE IF NOT EXISTS jobs(group_id TEXT PRIMARY KEY,watermark INTEGER DEFAULT 0,target INTEGER DEFAULT 0,reasons TEXT DEFAULT '[]',updated REAL DEFAULT 0,next_attempt REAL DEFAULT 0,error TEXT DEFAULT '');''')
+ db.executescript('''CREATE TABLE IF NOT EXISTS failures(id INTEGER PRIMARY KEY,group_id TEXT,start_id INTEGER,end_id INTEGER,error TEXT,details TEXT,created REAL);CREATE TABLE IF NOT EXISTS blocked_ranges(group_id TEXT,start_id INTEGER,end_id INTEGER,reason TEXT,created REAL,PRIMARY KEY(group_id,start_id,end_id));CREATE TABLE IF NOT EXISTS jobs(group_id TEXT PRIMARY KEY,watermark INTEGER DEFAULT 0,target INTEGER DEFAULT 0,reasons TEXT DEFAULT '[]',updated REAL DEFAULT 0,next_attempt REAL DEFAULT 0,error TEXT DEFAULT '');''')
  return db
 
 def enqueue(cfg,group,reason,now=None):
@@ -157,7 +157,11 @@ def tick(db,cfg,invoke=None,now=None):
   if 'job' in locals() and job:
    detail=str(exc)
    code=type(exc).__name__+(':'+detail[:160] if re.fullmatch(r'[A-Za-z0-9_.$:, \[\]-]{1,200}',detail) else '')
-   with queue:queue.execute('UPDATE jobs SET error=?,next_attempt=? WHERE group_id=?',(code,now+60,job['group_id']))
+   details={'group_id':job['group_id'],'stage':'incremental_memory','validation_code':code,'start_id':job['watermark'],'end_id':locals().get('cutoff',job['target'])}
+   exc.details={**getattr(exc,'details',{}),**details}
+   with queue:
+    queue.execute('UPDATE jobs SET error=?,next_attempt=? WHERE group_id=?',(code,now+60,job['group_id']))
+    queue.execute('INSERT INTO failures(group_id,start_id,end_id,error,details,created) VALUES (?,?,?,?,?,?)',(job['group_id'],job['watermark'],details['end_id'],code,json.dumps(details),time.time()))
   if 'job' in locals() and job and hasattr(exc,'details'):exc.details.update(group_id=job['group_id'],stage='incremental_memory')
   raise
  finally:queue.close()

@@ -1,6 +1,6 @@
 # 终端控制台
 
-双击 `Surf Console.command`，或在项目目录运行 `python3 console.py`，默认启动 Lite。需要下述双窗界面时使用 `python3 console.py --full`。不需要额外 UI 依赖。
+双击 `Surf Console.command`，或在项目目录运行 `python3 console.py`，默认启动 Lite。需要下述双窗界面时使用 `python3 console.py --full`。Lite 的并行输入组件安装到项目本地：`python3 -m pip install --target runtime/deps -r requirements-lite.txt`。完整界面仍使用标准库 curses。
 
 左窗显示 QQ Helper 原始输出，右窗显示 surf bot 收件、worker 决策、发送回执和命令结果，底部始终可以输入。Tab 补全命令、服务子命令、群名和群号；首次显示多个候选，再按 Tab 循环选中。F6 或鼠标点击选择日志窗，↑/↓ 按显示行滚动，鼠标滚轮滚动，PgUp/PgDn 翻页，End 回到实时；左右键编辑输入，Ctrl-P/Ctrl-N 找回本次输入历史。Ctrl-U 清空输入。`/quit` 或 Ctrl-C 仅退出界面，两个后台服务继续运行。
 
@@ -64,7 +64,7 @@ python3 console.py --command '/worker 观察最新话题，不需要强行回复
 
 终端不方便使用全屏界面时，运行 `python3 console.py --lite`，或双击 `Surf Lite.command`。Lite 使用普通逐行输出，不切换全屏、不设置颜色、不读取头像、不显示 surf bot 日志或 Helper 的系统杂项，只显示同样简化后的群聊和私聊记录；使用终端自身的滚动历史即可。
 
-仍可输入 `/use`、`/say`、`/paste`、`/worker`、`/pause` 等命令，命令结果会就地显示。readline 可用时支持 Tab 补全和终端原生行编辑；输入未提交的命令时先缓存新的聊天行，提交后继续显示，避免覆盖半截输入。`/help` 列出可用命令，`/quit` 只退出界面。
+仍可输入 `/use`、`/say`、`/paste`、`/worker`、`/pause` 等命令，命令结果会就地显示。正常交互终端使用 prompt_toolkit 保留输入并原地刷新：打字期间聊天仍会更新，Tab 补全不受影响。启动时释放旧的鼠标捕获和全屏状态，滚轮交给终端原生回滚；不设置群色、人色。简单管道或 TERM=dumb 环境保留逐行输入模式。`/help` 列出可用命令，`/quit` 只退出界面。
 
 标准界面向上查看历史时，新消息不会把当前阅读位置推走；右上/左上的“历史”状态显示距离实时的行数。按 End 恢复跟随最新消息。每个日志窗独立保存滚动位置，长消息也能逐行查看。Lite 继续使用终端自身的滚动历史。
 
@@ -92,3 +92,5 @@ Lite 和标准界面 `/use` 的 Tab 补全均优先填入群名；重名群使�
 
 
 服务商以 `content_filter` 拒绝的聊天批次标记为 `content_filtered`，相关待办标为 `blocked`；记忆批次在 `memory-maintenance.sqlite3/blocked_ranges` 中记录未完成的语义整理区间。原始归档保留，不把拒绝当作成功摘要，也不自动反复重发同一批内容。`/status` 的 `memory.blocked_ranges` 显示缺口数量。其他新增样本继续处理。此类拒绝不拉起代码排障；真正的格式、网络或校验错误仍保留重试和排障链路。
+
+记忆整理的每次失败另存于 `memory-maintenance.sqlite3/failures`，包含群、归档区间、校验错误码和时间；重试成功不会删除失败记录，便于追溯，避免只剩泛化的 ValueError。

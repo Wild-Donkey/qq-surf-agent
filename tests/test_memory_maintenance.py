@@ -87,6 +87,16 @@ class MaintenanceTests(unittest.TestCase):
   self.assertFalse(mm.tick(self.db,self.cfg,invoke=lambda p:self.fail('same refused batch retried')))
   self.record('b');mm.enqueue(self.cfg,1,'periodic')
   self.assertTrue(mm.tick(self.db,self.cfg,invoke=lambda p:{}))
+ def test_failure_details_survive_later_success(self):
+  self.record('a')
+  with self.assertRaises(ValueError) as caught:mm.tick(self.db,self.cfg,invoke=lambda p:{'unexpected':'x'},now=1000)
+  self.assertEqual(caught.exception.details['group_id'],'1')
+  mm.tick(self.db,self.cfg,invoke=lambda p:{},now=1100)
+  db=mm.connect(self.cfg)
+  try:
+   row=db.execute('SELECT error,details FROM failures').fetchone()
+   self.assertIn('invalid_memory_bundle',row['error']);self.assertEqual(json.loads(row['details'])['group_id'],'1')
+  finally:db.close()
  def test_atomic_bundle_rejects_wrong_evidence(self):
   self.record('a');store=memory_store.MemoryStore(self.tmp.name)
   try:

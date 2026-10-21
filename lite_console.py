@@ -1,5 +1,5 @@
-"""Plain line-oriented terminal: chat only, no curses, ANSI, colors or avatars."""
-import collections,json,sys,threading,time
+"""Chat-only terminal with native scrollback and concurrent prompt redraw."""
+import collections,json,sys,threading,time,os
 from pathlib import Path
 import chat_view,completion,service_log
 ROOT=Path(__file__).resolve().parent
@@ -29,10 +29,38 @@ def print_chat_batch(output,pending,reading):
  if reading:output.write('> ')
  output.flush()
 
+def terminal_session():
+ sys.path.insert(0,str(Path(__file__).resolve().parent/'runtime/deps'))
+ from prompt_toolkit import PromptSession
+ from prompt_toolkit.completion import Completer,Completion
+ from prompt_toolkit.output import ColorDepth
+ class Groups(Completer):
+  def get_completions(self,document,event):
+   prefix=document.text_before_cursor
+   try:groups=json.loads((ROOT/'workflow.json').read_text()).get('groups',[])
+   except (OSError,ValueError):groups=[]
+   for value,label in completion.candidates(prefix,groups):
+    yield Completion(value,start_position=-len(prefix),display=value,display_meta=label)
+ return PromptSession(completer=Groups(),complete_while_typing=False,mouse_support=False,
+                      color_depth=ColorDepth.DEPTH_1_BIT,reserve_space_for_menu=0)
+
 def run(controller=None,input_fn=None,output=None):
+ output=output or sys.stdout
+ if input_fn is None and sys.stdin.isatty() and output.isatty() and os.environ.get('TERM')!='dumb':
+  try:session=terminal_session()
+  except ImportError:session=None
+  if session:
+   from prompt_toolkit.patch_stdout import patch_stdout
+   # Release any inherited fullscreen/mouse tracking before using scrollback.
+   output.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l\x1b[?1049l');output.flush()
+   with patch_stdout(raw=True):return _run(controller,session.prompt,sys.stdout,managed_prompt=True)
+ return _run(controller,input_fn,output)
+
+def _run(controller=None,input_fn=None,output=None,managed_prompt=False):
  from console import Controller,Tail
  controller=controller or Controller();input_fn=input_fn or input;output=output or sys.stdout
  try:
+  if managed_prompt:raise ImportError
   import readline
   old_completer=readline.get_completer();old_delims=readline.get_completer_delims();setup_completion(readline)
  except ImportError:readline=None
@@ -45,12 +73,18 @@ def run(controller=None,input_fn=None,output=None):
  def follow():
   pending=collections.deque(maxlen=2000)
   while not stop.wait(.25):
-   pending.extend(chat_lines(tail.read()))
+   try:pending.extend(chat_lines(tail.read()))
+   except OSError as exc:
+    service_log.event('console','chat log tail retry error='+type(exc).__name__)
+    continue
    # With readline, don't break a half-typed command. Flush after it is submitted.
-   if reading.is_set() and readline and readline.get_line_buffer():continue
+   if not managed_prompt and reading.is_set() and readline and readline.get_line_buffer():continue
    if pending:
     with printing:
-     print_chat_batch(output,pending,reading.is_set())
+     if managed_prompt:
+      while pending:output.write(pending.popleft()+'\n')
+      output.flush()
+     else:print_chat_batch(output,pending,reading.is_set())
  thread=threading.Thread(target=follow,name='lite-chat-log',daemon=True);thread.start()
  try:
   while True:
@@ -62,7 +96,7 @@ def run(controller=None,input_fn=None,output=None):
    if not line:continue
    if line=='/help':
     write('\n'.join(key+' · '+value for key,value in completion.COMMANDS.items()))
-    write('Tab补全；终端支持时再次Tab显示候选。输入命令期间暂缓滚动，提交后继续。');continue
+    write('Tab补全；实时聊天不会打断输入。鼠标滚轮使用终端原生回滚；Ctrl-P/Ctrl-N翻命令历史。');continue
    try:result=controller.execute(line)
    except Exception as exc:result='操作失败：'+service_log.clean(str(exc))
    write(service_log.clean(result));service_log.event('console',result)
