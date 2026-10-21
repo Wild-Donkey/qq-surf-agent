@@ -39,8 +39,19 @@ def schedule(cfg,now=None):
  for group in cfg.get('groups',[]):
   if group.get('enabled',True) and (str(group['id']) not in rows or now-rows[str(group['id'])]['updated']>=interval):enqueue(cfg,group['id'],'periodic',now)
 
+MANAGED_FACT_FIELDS={'first_seen','last_seen','source','status'}
+
+def editable(value):
+ """Remove application-owned fact metadata; retain unknown fields for validation."""
+ if isinstance(value,list):return [editable(item) for item in value]
+ if isinstance(value,dict):
+  is_fact='evidence' in value and 'confidence' in value
+  return {key:editable(item) for key,item in value.items() if not (is_fact and key in MANAGED_FACT_FIELDS)}
+ return value
+
 @memory_store.retry_conflicts
 def apply(store,group,value,messages):
+ value=editable(value)
  if not isinstance(value,dict) or set(value)-{'group','members'}:raise ValueError('invalid_memory_bundle')
  members=value.get('members',[])
  if not isinstance(members,list) or len(members)>len(messages):raise ValueError('invalid_memory_members')
@@ -105,7 +116,7 @@ def tick(db,cfg,invoke=None,now=None):
   store=memory_store.MemoryStore(cfg['context_dir'])
   try:
    users=sorted({m['speaker'] for m in messages if m['speaker'].isdigit() and m['speaker']!=str(cfg.get('bot_id'))})
-   payload={'group_id':job['group_id'],'triggers':json.loads(job['reasons']),'messages':messages,'existing_group':store.load('group',job['group_id']),'existing_people':[store.load('person',u) for u in users],'schema':memory_store.SCHEMA['$defs']}
+   payload={'group_id':job['group_id'],'triggers':json.loads(job['reasons']),'messages':messages,'existing_group':editable(store.load('group',job['group_id'])),'existing_people':[editable(store.load('person',u)) for u in users],'schema':memory_store.SCHEMA['$defs']}
    if invoke:value=invoke(payload)
    else:
     import social

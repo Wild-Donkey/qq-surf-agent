@@ -61,6 +61,15 @@ class MaintenanceTests(unittest.TestCase):
    mm.apply(store,'1',{'group':{'portrait':{'topics':[{'text':'new','evidence':['1:b'],'confidence':1}]}}},[{'event_key':'1:b','speaker':'2'}])
    self.assertEqual({f['text'] for f in store.load('group','1')['portrait']['topics']},{'old','new'})
   finally:store.close()
+ def test_echoed_application_metadata_is_removed_not_trusted(self):
+  self.record('a');store=memory_store.MemoryStore(self.tmp.name)
+  try:
+   fact={'text':'编程','evidence':['1:a'],'confidence':1,'first_seen':1,'last_seen':2,'source':'bridge','status':'supported'}
+   mm.apply(store,'1',{'group':{'portrait':{'topics':[fact]}}},[{'event_key':'1:a','speaker':'2'}])
+   saved=store.load('group','1')['portrait']['topics'][0]
+   self.assertEqual(saved['source'],'incremental_memory');self.assertNotEqual(saved['first_seen'],1)
+   with self.assertRaises(ValueError):mm.apply(store,'1',{'group':{'portrait':{'topics':[dict(fact,arbitrary='bad')]}}},[{'event_key':'1:a','speaker':'2'}])
+  finally:store.close()
  def test_atomic_bundle_rejects_wrong_evidence(self):
   self.record('a');store=memory_store.MemoryStore(self.tmp.name)
   try:
