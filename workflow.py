@@ -316,9 +316,18 @@ def dispatch(db, cfg, api_cfg, now=None):
         if job['kind']=='reply' and str(job['source_group'])!=str(target):
             with db:db.execute("UPDATE deliveries SET status='blocked_cross_group_reply' WHERE id=?",(job['id'],))
             continue
-        if not group_is_active(db,target,cfg,now):
-            continue
-        if not participants.humans_recent(db,target,cfg,now):continue
+        intro=onboarding.is_introduction(db,target,job['candidate_id'])
+        if intro:
+            # A first greeting acknowledges joining; it does not require a conversation first.
+            if moderation.is_muted(db,target,now) or not onboarding.greeting_allowed(db,cfg,target,now):continue
+            joined=agent.onebot_call(api_cfg,'get_group_list')
+            if not any(str(g.get('group_id'))==str(target) for g in joined):continue
+            members=agent.onebot_call(api_cfg,'get_group_member_list',{'group_id':int(target)})
+            me=next((m for m in members if str(m.get('user_id'))==str(cfg['bot_id'])),None)
+            if me is None or float(me.get('shut_up_timestamp',0))>now:continue
+        else:
+            if not group_is_active(db,target,cfg,now):continue
+            if not participants.humans_recent(db,target,cfg,now):continue
         if cfg.get('refresh_before_send',False):
             try:
                 history=agent.onebot_call(api_cfg,'get_group_msg_history',{'group_id':int(target),'count':12,'disable_get_url':True})

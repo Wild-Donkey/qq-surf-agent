@@ -156,20 +156,28 @@ def refresh_greeting_activity(db,cfg,api,now):
             alerts.record(db,'greeting_history_failed','入群自我介绍等待补读近期消息。',scope=gid,details={'error':type(exc).__name__})
 
 
+def greeting_allowed(db,cfg,gid,now):
+    row=db.execute('SELECT new_group,created FROM group_onboarding WHERE group_id=?',(str(gid),)).fetchone()
+    if not row or not row['new_group'] or not 0<=now-row['created']<=86400:return False
+    active=db.execute('SELECT last_member_message FROM group_activity WHERE group_id=?',(str(gid),)).fetchone()
+    return not active or 0<=now-active[0]<=cfg.get('inactive_group_days',14)*86400
+
+def is_introduction(db,target,candidate):
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='group_onboarding'").fetchone():return False
+    return bool(db.execute('SELECT 1 FROM group_onboarding WHERE group_id=? AND intro_candidate=? AND new_group=1',(str(target),candidate)).fetchone())
+
+
 def greet(db,cfg,now):
     with db:
         db.execute("""UPDATE group_onboarding SET intro_candidate=NULL WHERE new_group=1 AND intro_candidate IS NOT NULL
           AND EXISTS (SELECT 1 FROM deliveries d WHERE d.candidate_id=group_onboarding.intro_candidate AND d.status IN ('expired','superseded','blocked_muted'))
           AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.candidate_id=group_onboarding.intro_candidate AND d.status IN ('sent','uncertain','already_seen','approved'))""")
     model=social.load_model(cfg)
-    if not model.get('enabled') or not social.api_key(model):return
     for row in db.execute("SELECT group_id FROM group_onboarding WHERE new_group=1 AND intro_candidate IS NULL AND status='done'").fetchall():
         gid=row['group_id']
         import moderation
         if moderation.is_muted(db,gid,now):continue
-        active=db.execute('SELECT last_member_message FROM group_activity WHERE group_id=?',(gid,)).fetchone()
-        if not active or not 0<=now-active[0]<=cfg.get('inactive_group_days',14)*86400:continue
-        if not participants.humans_recent(db,gid,cfg,now):continue
+        if not greeting_allowed(db,cfg,gid,now):continue
         text=bot_identity.introduction(model)
         fp=hashlib.sha256(('intro:'+gid).encode()).hexdigest()
         with db:

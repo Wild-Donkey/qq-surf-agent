@@ -57,3 +57,21 @@ class OnboardingTests(unittest.TestCase):
         with self.db:self.db.execute("UPDATE deliveries SET status='uncertain'")
         with patch('social.load_model',return_value={'enabled':True,'api_key':'test'}):onboarding.greet(self.db,self.cfg,self.now+12)
         self.assertEqual(self.db.execute('SELECT status FROM deliveries').fetchone()[0],'uncertain')
+
+    def test_first_greeting_without_history_or_human_presence(self):
+        with self.db:self.db.execute("INSERT INTO group_onboarding(group_id,created,status,new_group) VALUES ('1',?,'done',1)",(self.now,))
+        self.cfg.update(mode='live',refresh_before_send=False,max_per_tick=1)
+        with patch('social.load_model',return_value={'enabled':False,'model':'configured-model'}):onboarding.greet(self.db,self.cfg,self.now)
+        def api(cfg,action,payload=None):
+            return {'get_login_info':{'user_id':99},'get_group_list':[{'group_id':1}], 'get_group_member_list':[{'user_id':99,'shut_up_timestamp':0}], 'send_group_msg':{'message_id':55}}[action]
+        with patch('agent.onebot_call',side_effect=api):
+            self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+1),1)
+            self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+2),0)
+        self.assertEqual(self.db.execute('SELECT status FROM deliveries').fetchone()[0],'sent')
+    def test_greeting_does_not_send_after_departure(self):
+        with self.db:self.db.execute("INSERT INTO group_onboarding(group_id,created,status,new_group) VALUES ('1',?,'done',1)",(self.now,))
+        self.cfg.update(mode='live')
+        with patch('social.load_model',return_value={'model':'configured-model'}):onboarding.greet(self.db,self.cfg,self.now)
+        def api(cfg,action,payload=None):return {'get_login_info':{'user_id':99},'get_group_list':[]}[action]
+        with patch('agent.onebot_call',side_effect=api) as calls:self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+1),0)
+        self.assertFalse(any(c.args[1]=='send_group_msg' for c in calls.call_args_list))
