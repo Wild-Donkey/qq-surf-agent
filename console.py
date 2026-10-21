@@ -4,11 +4,11 @@ import argparse,collections,concurrent.futures,json,os,queue,shlex,signal,subpro
 try:import curses
 except ImportError:curses=None
 from pathlib import Path
-import agent,qq,workflow,operator_control,service_log,completion,chat_view,avatar_palette,clipboard_image
+import agent,qq,workflow,operator_control,service_log,completion,chat_view,avatar_palette,clipboard_image,log_scroll
 ROOT=Path(__file__).resolve().parent
 HELP='''/groups  /use 群名或群号  /say 内容（或直接输入）  /takeover  /resume
 /paste  /worker prompt  /jobs  /status  /bot start|restart|stop  /helper status|start|wrap|stop
-/help  /quit  · Tab补全命令/群名，F6切换日志窗，PgUp/PgDn翻页，End回到实时；退出界面不停止服务'''
+/help  /quit  · Tab补全命令/群名，F6切换日志窗，↑/↓或滚轮滚动，PgUp/PgDn翻页，End回到实时；退出界面不停止服务'''
 
 def alive(path):
  try:pid=int(path.read_text());os.kill(pid,0);return pid
@@ -132,8 +132,10 @@ def wrap(text,width):
 
 def run(screen):
  curses.curs_set(1);screen.timeout(100);screen.keypad(True)
+ try:curses.mousemask(curses.ALL_MOUSE_EVENTS)
+ except curses.error:pass
  avatars=avatar_palette.AvatarPalette();styles=chat_view.Styles(avatars)
- controller=Controller();buffers=[collections.deque(maxlen=2000),collections.deque(maxlen=2000)];offsets=[0,0];focus=0
+ controller=Controller();buffers=[collections.deque(maxlen=2000),collections.deque(maxlen=2000)];views=[log_scroll.Viewport(True),log_scroll.Viewport()];focus=0
  tails=[Tail(ROOT/'runtime/logs/qq-helper.log'),Tail(ROOT/'runtime/logs/surf-bot.log')]
  # Include supervisor output alongside detailed bot events.
  fallback=Tail(ROOT/'runtime/workflow.log')
@@ -151,9 +153,11 @@ def run(screen):
   except curses.error:pass
  try:
   while True:
-   for i,tail in enumerate(tails):buffers[i].extend(tail.read())
-   buffers[1].extend(fallback.read())
-   while not outputs.empty():buffers[1].extend(outputs.get().splitlines())
+   for i,tail in enumerate(tails):
+    fresh=tail.read();views[i].arrived(fresh);buffers[i].extend(fresh)
+   fresh=fallback.read();views[1].arrived(fresh);buffers[1].extend(fresh)
+   while not outputs.empty():
+    fresh=outputs.get().splitlines();views[1].arrived(fresh);buffers[1].extend(fresh)
    if time.monotonic()-groups_checked>3:
     try:groups=json.loads((ROOT/'workflow.json').read_text()).get('groups',[])
     except (OSError,ValueError):pass
@@ -165,13 +169,10 @@ def run(screen):
     pane=height-9;left=(width-1)//2
     for i,title in enumerate(('QQ Helper','surf bot / 操作结果')):
      x=0 if i==0 else left+1;columns=left if i==0 else width-left-2
-     put(0,x,('▶ ' if i==focus else '  ')+title+(' [历史]' if offsets[i] else ' [实时]'),columns)
-     lines=list(buffers[i]);end=max(0,len(lines)-offsets[i]);visual=[]
-     for line in lines[max(0,end-pane):end]:
-      row=chat_view.parse(line) if i==0 else chat_view.Row(line)
-      attr=styles.attr(row) if i==0 else 0
-      visual.extend((part,attr) for part in wrap(row.text,columns))
-     for n,(line,attr) in enumerate(visual[-pane:]):
+     visible=views[i].visible(buffers[i],columns,pane)
+     put(0,x,('▶ ' if i==focus else '  ')+title+(' [历史 ↑'+str(views[i].offset)+']' if views[i].offset else ' [实时]'),columns)
+     for n,(line,group,user) in enumerate(visible):
+      attr=styles.attr(chat_view.Row(line,group,user)) if i==0 else 0
       padding=max(0,columns-display_width(line))
       put(1+n,x,line+' '*padding,columns,attr)
     for y in range(pane+1):put(y,left,'│',1)
@@ -179,7 +180,7 @@ def run(screen):
     choices=completer.items if completer.last==(text,cursor) else completion.candidates(text[:cursor],groups)
     index=max(0,completer.index) if completer.last==(text,cursor) else 0
     for row,item in enumerate(choices[index:index+3]):put(height-6+row,0,('→ ' if row==0 else '  ')+item[0]+' · '+item[1],width-1)
-    put(height-3,0,'Tab补全/循环 · F6切日志 · PgUp/PgDn翻页 · End实时 · /help · /quit',width-1)
+    put(height-3,0,'Tab补全 · F6切窗 · ↑↓/滚轮滚动 · PgUp/PgDn翻页 · End实时 · /help · /quit',width-1)
     start=max(0,cursor-(width-6)//2)
     put(height-2,0,'> '+text[start:],width-1)
     try:screen.move(height-2,min(width-2,2+display_width(text[start:cursor])))
@@ -192,20 +193,30 @@ def run(screen):
     line=text.strip();text='';cursor=0
     if line in ('/quit','/exit'):break
     if line:
-     history.append(line);history_index=len(history);buffers[1].append('> '+service_log.clean(line));pool.submit(task,line)
+     history.append(line);history_index=len(history);views[1].arrived(['> '+service_log.clean(line)]);buffers[1].append('> '+service_log.clean(line));pool.submit(task,line)
    elif key=='\t':text,cursor=completer.tab(text,cursor,groups)
    elif key==curses.KEY_F6:focus=1-focus
-   elif key==curses.KEY_PPAGE:offsets[focus]=min(max(0,len(buffers[focus])-1),offsets[focus]+10)
-   elif key==curses.KEY_NPAGE:offsets[focus]=max(0,offsets[focus]-10)
-   elif key==curses.KEY_END:offsets[focus]=0
+   elif key==curses.KEY_UP:views[focus].scroll(1)
+   elif key==curses.KEY_DOWN:views[focus].scroll(-1)
+   elif key==curses.KEY_PPAGE:views[focus].scroll(max(1,height-10))
+   elif key==curses.KEY_NPAGE:views[focus].scroll(-max(1,height-10))
+   elif key==curses.KEY_END:views[focus].live()
+   elif key==curses.KEY_MOUSE:
+    try:
+     _,mx,my,_,buttons=curses.getmouse()
+     if my<height-8:
+      focus=0 if mx<(width-1)//2 else 1
+      if buttons & getattr(curses,'BUTTON4_PRESSED',0):views[focus].scroll(3)
+      elif buttons & getattr(curses,'BUTTON5_PRESSED',0):views[focus].scroll(-3)
+    except curses.error:pass
    elif key in (curses.KEY_BACKSPACE,'\x7f','\b'):
     if cursor:text=text[:cursor-1]+text[cursor:];cursor-=1
    elif key==curses.KEY_DC:text=text[:cursor]+text[cursor+1:]
    elif key==curses.KEY_LEFT:cursor=max(0,cursor-1)
    elif key==curses.KEY_RIGHT:cursor=min(len(text),cursor+1)
    elif key==curses.KEY_HOME:cursor=0
-   elif key in (curses.KEY_UP,curses.KEY_DOWN):
-    history_index=max(0,min(len(history),history_index+(-1 if key==curses.KEY_UP else 1)));text=history[history_index] if history_index<len(history) else '';cursor=len(text)
+   elif key in ('\x10','\x0e'):
+    history_index=max(0,min(len(history),history_index+(-1 if key=='\x10' else 1)));text=history[history_index] if history_index<len(history) else '';cursor=len(text)
    elif key=='\x15':text='';cursor=0
    elif isinstance(key,str) and key.isprintable() and len(text)<12000:text=text[:cursor]+key+text[cursor:];cursor+=1
  except KeyboardInterrupt:pass
