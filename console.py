@@ -2,11 +2,11 @@
 """Two live log panes and a non-blocking local operations prompt (stdlib only)."""
 import argparse,collections,concurrent.futures,curses,json,os,queue,shlex,signal,subprocess,sys,time,unicodedata
 from pathlib import Path
-import agent,qq,workflow,operator_control,service_log
+import agent,qq,workflow,operator_control,service_log,completion
 ROOT=Path(__file__).resolve().parent
 HELP='''/groups  /use 群名或群号  /say 内容（或直接输入）  /takeover [分钟]  /resume
 /worker prompt  /jobs  /status  /bot start|restart|stop  /helper status|start|wrap|stop
-/help  /quit  · Tab切换日志窗，PgUp/PgDn翻页，End回到实时；退出界面不停止服务'''
+/help  /quit  · Tab补全命令/群名，F6切换日志窗，PgUp/PgDn翻页，End回到实时；退出界面不停止服务'''
 
 def alive(path):
  try:pid=int(path.read_text());os.kill(pid,0);return pid
@@ -108,13 +108,28 @@ def clip(text,width):
   out.append(c);used+=size
  return ''.join(out)
 
+def display_width(text):
+ return sum(0 if unicodedata.combining(c) else 2 if unicodedata.east_asian_width(c) in ('W','F') else 1 for c in text)
+
+def wrap(text,width):
+ if width<=0:return ['']
+ lines=[]
+ while text:
+  part=clip(text,width)
+  if not part:break
+  lines.append(part);text=text[len(part):]
+ return lines or ['']
+
+
 def run(screen):
  curses.curs_set(1);screen.timeout(100);screen.keypad(True)
  controller=Controller();buffers=[collections.deque(maxlen=2000),collections.deque(maxlen=2000)];offsets=[0,0];focus=0
  tails=[Tail(ROOT/'runtime/logs/qq-helper.log'),Tail(ROOT/'runtime/logs/surf-bot.log')]
  # Include supervisor output alongside detailed bot events.
- fallback=Tail(ROOT/'runtime/workflow.log');outputs=queue.Queue();pool=concurrent.futures.ThreadPoolExecutor(max_workers=1)
- text='';cursor=0;history=[];history_index=0
+ fallback=Tail(ROOT/'runtime/workflow.log')
+ if tails[1].path.exists():fallback.read()  # Don't place stale startup failures after current structured logs.
+ outputs=queue.Queue();pool=concurrent.futures.ThreadPoolExecutor(max_workers=1)
+ text='';cursor=0;history=[];history_index=0;completer=completion.Completer();groups=[];groups_checked=0
  buffers[1].extend(HELP.splitlines())
  if not tails[0].path.exists():buffers[0].append('QQ Helper 尚未封装日志；/helper wrap 接管当前实例，或 /helper start 启动。')
  def task(line):
@@ -129,28 +144,42 @@ def run(screen):
    for i,tail in enumerate(tails):buffers[i].extend(tail.read())
    buffers[1].extend(fallback.read())
    while not outputs.empty():buffers[1].extend(outputs.get().splitlines())
+   if time.monotonic()-groups_checked>3:
+    try:groups=json.loads((ROOT/'workflow.json').read_text()).get('groups',[])
+    except (OSError,ValueError):pass
+    groups_checked=time.monotonic()
    height,width=screen.getmaxyx();screen.erase()
    if height<12 or width<45:
     put(0,0,'请把终端放大至至少45列、12行。Ctrl-C退出',width-1)
    else:
-    pane=(height-5)//2
+    pane=height-9;left=(width-1)//2
     for i,title in enumerate(('QQ Helper','surf bot / 操作结果')):
-     y=i*(pane+1);put(y,0,('▶ ' if i==focus else '  ')+title+(' [历史]' if offsets[i] else ' [实时]'),width-1)
-     lines=list(buffers[i]);end=max(0,len(lines)-offsets[i]);start=max(0,end-pane)
-     for n,line in enumerate(lines[start:end]):put(y+1+n,0,line,width-1)
-    put(height-3,0,'当前群 '+str(controller.group or '未选择')+' · /help · Tab/PgUp/PgDn/End · /quit仅退出界面',width-1)
-    put(height-2,0,'> '+text[max(0,cursor-(width-6)//2):],width-1)
-    try:screen.move(height-2,min(width-2,2+len(clip(text[max(0,cursor-(width-6)//2):cursor],width-5))))
+     x=0 if i==0 else left+1;columns=left if i==0 else width-left-2
+     put(0,x,('▶ ' if i==focus else '  ')+title+(' [历史]' if offsets[i] else ' [实时]'),columns)
+     lines=list(buffers[i]);end=max(0,len(lines)-offsets[i]);visual=[]
+     for line in lines[max(0,end-pane):end]:visual.extend(wrap(line,columns))
+     for n,line in enumerate(visual[-pane:]):put(1+n,x,line,columns)
+    for y in range(pane+1):put(y,left,'│',1)
+    put(height-7,0,'当前群 '+str(controller.group or '未选择')+' · 手动发送标记【人工接管】',width-1)
+    choices=completer.items if completer.last==(text,cursor) else completion.candidates(text[:cursor],groups)
+    index=max(0,completer.index) if completer.last==(text,cursor) else 0
+    for row,item in enumerate(choices[index:index+3]):put(height-6+row,0,('→ ' if row==0 else '  ')+item[0]+' · '+item[1],width-1)
+    put(height-3,0,'Tab补全/循环 · F6切日志 · PgUp/PgDn翻页 · End实时 · /help · /quit',width-1)
+    start=max(0,cursor-(width-6)//2)
+    put(height-2,0,'> '+text[start:],width-1)
+    try:screen.move(height-2,min(width-2,2+display_width(text[start:cursor])))
     except curses.error:pass
    screen.refresh()
    try:key=screen.get_wch()
    except curses.error:continue
+   if key!='\t':completer.reset()
    if key in ('\n','\r',curses.KEY_ENTER):
     line=text.strip();text='';cursor=0
     if line in ('/quit','/exit'):break
     if line:
      history.append(line);history_index=len(history);buffers[1].append('> '+service_log.clean(line));pool.submit(task,line)
-   elif key=='\t':focus=1-focus
+   elif key=='\t':text,cursor=completer.tab(text,cursor,groups)
+   elif key==curses.KEY_F6:focus=1-focus
    elif key==curses.KEY_PPAGE:offsets[focus]=min(max(0,len(buffers[focus])-1),offsets[focus]+10)
    elif key==curses.KEY_NPAGE:offsets[focus]=max(0,offsets[focus]-10)
    elif key==curses.KEY_END:offsets[focus]=0

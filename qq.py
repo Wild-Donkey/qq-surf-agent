@@ -30,9 +30,16 @@ def pause(db,group,minutes):
     with db:db.execute('INSERT OR REPLACE INTO operator_pause VALUES (?,?)',(str(group),time.time()+minutes*60))
 
 
+MANUAL_MARK='【人工接管】'
+
+def manual_text(text):
+    text=text.strip()
+    return text if text.startswith(MANUAL_MARK) else MANUAL_MARK+' '+text
+
 def send(db,cfg,api,target,text,private=False,dry_run=False):
     text=text.strip()
     if not text or len(text)>2000:raise ValueError('消息应为1到2000字')
+    text=manual_text(text)
     if not private and not workflow.group_is_active(db,target,cfg):
         raise ValueError('这个群近14天没有可靠的其他成员发言记录，按你的规则保持安静')
     if private and str(target)!=str(cfg.get('alerts',{}).get('owner_qq')):
