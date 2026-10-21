@@ -20,6 +20,9 @@ def load():
 
 
 def resolve_group(query,cfg):
+    query=str(query).strip()
+    exact=[g for g in cfg['groups'] if g.get('enabled',True) and (str(g['id'])==query or g['name'].casefold()==query.casefold() or (g['name']+' ['+str(g['id'])+']').casefold()==query.casefold())]
+    if len(exact)==1:return exact[0]
     matches=[g for g in cfg['groups'] if g.get('enabled',True) and (str(g['id'])==str(query) or str(query).casefold() in g['name'].casefold())]
     if len(matches)!=1:raise ValueError('群名不唯一或不存在；使用 groups 查看，或直接填群号')
     return matches[0]

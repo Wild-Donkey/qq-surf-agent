@@ -455,6 +455,7 @@ def tick(db,cfg,sessions=None):
                 for key in ('prompt_tokens','completion_tokens'):usage[key]=usage.get(key,0)+next_usage.get(key,0)
                 usage['_vision_status']=next_usage.get('_vision_status',{})
             if decision['action']=='read':decision={'action':'wait','text':'','reason':'本轮读取次数达到上限'}
+            decision=application.with_web_sources(decision,payload)
             if decision.get('state_updates'):
                 outcome=application.apply_worker_states(cfg,job['target_group'],payload,decision['state_updates'],db)
                 if not outcome['saved']:decision['_state_update_rejected']=outcome['error']

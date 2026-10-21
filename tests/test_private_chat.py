@@ -68,3 +68,12 @@ class PrivateTests(unittest.TestCase):
   def api(a,b,c=None):return {'get_login_info':{'user_id':99},'get_group_member_list':[],'get_group_list':[{'group_id':1}]}[b]
   with patch('moderation.agent.onebot_call',side_effect=api):moderation.check_recovery(self.db,self.cfg,{},self.now+1)
   self.assertNotEqual(self.db.execute('SELECT return_status FROM bot_mutes').fetchone()[0],'left_group')
+ def test_private_web_search_then_reply_stays_recipient_bound(self):
+  self.add(text='帮我搜索Python官网')
+  search=json.dumps({'call':{'name':'web_search','arguments':{'query':'Python 官网'}}})
+  reply=json.dumps({'call':{'name':'finish_turn','arguments':{'action':'reply','text':'官网 https://www.python.org/','quality':'natural'}}})
+  with patch('private_chat.agent.onebot_call',side_effect=self.call) as api,patch('private_chat.social.load_model',return_value={'enabled':True,'api_key':'fake'}),patch('private_chat.social.generate_text',side_effect=[(search,{}),(reply,{})]) as model,patch('private_chat.model_gate.reserve',side_effect=[1,2]),patch('internet.tool',return_value={'results':[{'url':'https://www.python.org/'}]}),patch('private_chat.time.sleep'):
+   private_chat.tick(self.db,self.cfg,{},self.now)
+  self.assertEqual(model.call_count,2)
+  sent=[c.args[2] for c in api.call_args_list if c.args[1]=='send_private_msg']
+  self.assertEqual(sent[0]['user_id'],7)

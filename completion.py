@@ -17,7 +17,9 @@ def candidates(prefix,groups):
   for g in groups:
    if not g.get('enabled',True):continue
    ident=str(g['id']);label=str(g.get('name',ident))
-   if not needle or needle in ident or needle in label.casefold():result.append(('/use '+ident+' ',label+' · '+ident))
+   duplicate=sum(str(item.get('name',item['id'])).casefold()==label.casefold() for item in groups if item.get('enabled',True))>1
+   choice=label+' ['+ident+']' if duplicate else label
+   if not needle or needle in ident or needle in label.casefold():result.append(('/use '+choice+' ',label+' · '+ident))
   return result
  return [(name+' '+key+' ',value) for key,value in ACTIONS.get(name,{}).items() if key.startswith(arg)]
 

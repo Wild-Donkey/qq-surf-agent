@@ -12,7 +12,7 @@ class CompletionTests(unittest.TestCase):
   self.assertNotEqual(one,two);self.assertTrue(one[0].startswith('/s'))
  def test_group_name_and_id(self):
   groups=[{'id':123,'name':'武汉棺材房'},{'id':456,'name':'别的群','enabled':False}]
-  c=completion.Completer();self.assertEqual(c.tab('/use 棺材',7,groups)[0],'/use 123 ')
+  c=completion.Completer();self.assertEqual(c.tab('/use 棺材',7,groups)[0],'/use 武汉棺材房 ')
   self.assertEqual(len(completion.candidates('/use ',groups)),1)
  def test_plain_text_not_rewritten(self):
   c=completion.Completer();self.assertEqual(c.tab('我要说一句',5,[]),('我要说一句',5))
@@ -27,3 +27,10 @@ class CompletionTests(unittest.TestCase):
   finally:db.close()
  def test_wrap_unicode_columns(self):
   self.assertEqual(console.wrap('中文abc',4),['中文','abc'])
+
+ def test_duplicate_names_show_names_and_resolve_exactly(self):
+  groups=[{'id':1,'name':'群'},{'id':2,'name':'群'},{'id':3,'name':'群聊'}]
+  options=completion.candidates('/use ',groups)
+  self.assertEqual(options[0][0],'/use 群 [1] ')
+  self.assertEqual(qq.resolve_group('群 [1]',{'groups':groups})['id'],1)
+  self.assertEqual(qq.resolve_group('群聊',{'groups':groups})['id'],3)

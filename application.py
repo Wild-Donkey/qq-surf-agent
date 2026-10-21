@@ -6,6 +6,8 @@ import archive,emoticons,participants
 from protocol import parse_json
 import memory_store
 TOOLS=[
+ {'name':'web_search','description':'公开互联网搜索，参数query（最多300字符），返回来源标题、摘要、链接和检索时间'},
+ {'name':'read_webpage','description':'读取公开网页正文，参数url；不访问本机、内网、登录账号或下载文件'},
  {'name':'get_memory_schema','description':'读取群/成员状态与画像的规范字段，不接受任意字段'},
  {'name':'update_states','description':'提交群状态 group_state 和成员状态 members:[{user_id,state}]，应用校验后落盘'},
  {'name':'finish_turn','description':'一次提交状态并结束：group_state,members,action(wait/reply/share/merged_forward),text,candidate_id,bundle_id,message_ids,quality,emoticon,reason'},
@@ -21,10 +23,10 @@ TOOLS=[
  {'name':'merged_forward','description':'合并转发一段节目：bundle_id、message_ids、quality=natural；搬本群节目到其他活跃群时再带 outgoing_moments.destination.route_id，省略route_id则搬入当前群'},
  {'name':'forward','description':'转发当前群中某条消息（原生转发卡片），参数 message_id（取自 recent_target_messages）'},
  {'name':'wait','description':'保持安静，参数 reason'}]
-ARGUMENTS={'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id'},'search_history':{'query'},'list_emoticons':set(),'search_emoticons':{'query','include_unreviewed'},'view_emoticon':{'id'},'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'share_image':{'image_id','route_id','quality'},'merged_forward':{'bundle_id','message_ids','quality','route_id'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id','bundle_id','message_ids','route_id','image_id','image_share'}}
+ARGUMENTS={'web_search':{'query'},'read_webpage':{'url'},'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id'},'search_history':{'query'},'list_emoticons':set(),'search_emoticons':{'query','include_unreviewed'},'view_emoticon':{'id'},'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'share_image':{'image_id','route_id','quality'},'merged_forward':{'bundle_id','message_ids','quality','route_id'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id','bundle_id','message_ids','route_id','image_id','image_share'}}
 for _terminal in ('finish_turn','reply','share','forward','merged_forward','share_image'):
  ARGUMENTS[_terminal].update({'request_ids','request_outcome'})
-READS={'get_memory_schema','update_states','read_context','get_member','search_history','list_emoticons','search_emoticons','view_emoticon'}
+READS={'web_search','read_webpage','get_memory_schema','update_states','read_context','get_member','search_history','list_emoticons','search_emoticons','view_emoticon'}
 def decode(raw):
  value=parse_json(raw,'worker_api')
  # Bounded normalization; never let outer fields override explicit arguments.
@@ -65,15 +67,18 @@ def decision(call):
  if name=='finish_turn':
   if args.get('action') not in ('wait','reply','share','forward','merged_forward','share_image'):raise ValueError('invalid_finish_action')
   if not isinstance(args.get('text',''),str):raise ValueError('invalid_text')
-  return {'action':args['action'],'text':args.get('text','')[:180],'image_share':args.get('image_share'),'image_id':args.get('image_id'),'request_ids':args.get('request_ids',[]),'request_outcome':args.get('request_outcome'),'route_id':args.get('route_id'),'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'message_id':str(args.get('message_id','')) if args.get('message_id') else None,'reason':str(args.get('reason',''))[:200],'state_updates':{k:args[k] for k in ('group_state','members','images') if k in args}}
+  return {'action':args['action'],'text':args.get('text','')[:1200],'image_share':args.get('image_share'),'image_id':args.get('image_id'),'request_ids':args.get('request_ids',[]),'request_outcome':args.get('request_outcome'),'route_id':args.get('route_id'),'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'message_id':str(args.get('message_id','')) if args.get('message_id') else None,'reason':str(args.get('reason',''))[:200],'state_updates':{k:args[k] for k in ('group_state','members','images') if k in args}}
  if name in READS:return {'action':'read','call':call,'text':''}
  if name=='forward':
   mid=str(args.get('message_id',''))
   if not mid:raise ValueError('forward_requires_message_id')
   return {'action':'forward','text':'','message_id':mid,'emoticon':None,'reason':''}
- return {'action':name,'text':args.get('text','')[:180],'image_share':args.get('image_share'),'image_id':args.get('image_id'),'request_ids':args.get('request_ids',[]),'request_outcome':args.get('request_outcome'),'route_id':args.get('route_id'),'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'reason':str(args.get('reason',''))[:200]}
+ return {'action':name,'text':args.get('text','')[:1200],'image_share':args.get('image_share'),'image_id':args.get('image_id'),'request_ids':args.get('request_ids',[]),'request_outcome':args.get('request_outcome'),'route_id':args.get('route_id'),'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'reason':str(args.get('reason',''))[:200]}
 def read(db,cfg,target,payload,call):
  name=call['name'];args=call['arguments']
+ if name in ('web_search','read_webpage'):
+  import internet
+  return internet.tool(cfg,name,args)
  if name=='get_memory_schema':return {k:memory_store.SCHEMA['$defs'][k] for k in ('FactInput','RelationInput','StateInput','GroupPortraitInput','PersonPortraitInput')}
  if name=='update_states':
   outcome=apply_worker_states(cfg,target,payload,args,db)
@@ -111,6 +116,16 @@ def read(db,cfg,target,payload,call):
   try:return disk.search(target,query,limit=12)
   finally:disk.close()
  raise ValueError('not_read_api')
+def with_web_sources(decision,payload):
+ if decision.get('action')!='reply':return decision
+ sources=[]
+ for item in payload.get('tool_results',[]):
+  call=item.get('call',{});result=item.get('result',{})
+  if call.get('name')=='read_webpage' and result.get('text') and result.get('url'):sources.insert(0,result['url'])
+  elif call.get('name')=='web_search':sources.extend(row['url'] for row in result.get('results',[]) if row.get('url'))
+ if sources and not any(url in decision.get('text','') for url in sources):decision['text']=decision.get('text','').rstrip()+'\n'+sources[0]
+ return decision
+
 def settle_memory(memory,group,batch,views):
  # Foreign events must never become this group's local episodic memory.
  if any('source_group' in row.keys() and str(row['source_group'])!=str(group) for row in batch):raise ValueError('cross_group_memory_window')
