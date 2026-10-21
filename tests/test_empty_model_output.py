@@ -20,3 +20,15 @@ class EmptyOutputTests(unittest.TestCase):
    with patch('social.api_key',return_value='fake'),patch('vision.prepare',return_value=({'vision_status':{'attached':[],'unavailable':[]}},[])),patch('agent.request',return_value=json.dumps(response)):
     with self.assertRaises(ProtocolError) as caught:social.generate_text(model,'JSON',{})
    self.assertEqual(caught.exception.code,'model_content_filtered')
+
+ def test_filtered_group_batch_is_blocked_and_cannot_be_requeued_as_pending(self):
+  import workflow,operator_control,time
+  db=workflow.connect(':memory:');cfg={'groups':[{'id':1}],'bot_id':99}
+  try:
+   key=operator_control.submit(db,cfg,'1','test')
+   job=db.execute("SELECT * FROM social_jobs WHERE event_key=?",('operator:'+key,)).fetchone()
+   with db:slot=db.execute("INSERT INTO model_calls(created,status) VALUES (?,'reserved')",(time.time(),)).lastrowid
+   social.block_filtered_batch(db,job,[job],slot,time.time());operator_control.wake(db)
+   self.assertEqual(db.execute('SELECT status FROM social_jobs').fetchone()[0],'content_filtered')
+   self.assertEqual(db.execute('SELECT status FROM operator_prompts').fetchone()[0],'blocked')
+  finally:db.close()

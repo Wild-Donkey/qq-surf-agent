@@ -340,6 +340,8 @@ def block_filtered_batch(db,job,batch,call_id,now):
         for item in batch:
             db.execute("UPDATE social_jobs SET status='content_filtered',error='model_content_filtered' WHERE event_key=? AND target_group=?",(item['event_key'],item['target_group']))
             db.execute("UPDATE user_requests SET status='blocked',outcome='provider_content_filter' WHERE event_key=? AND status='pending'",(item['event_key'],))
+            if item['event_key'].startswith('operator:'):
+                db.execute("UPDATE operator_prompts SET status='blocked',error='provider_content_filter',updated=? WHERE id=? AND status='queued'",(now,item['event_key'].split(':',1)[1]))
         db.execute("UPDATE model_calls SET status='failed',error='model_content_filtered' WHERE id=?",(call_id,))
         db.execute('DELETE FROM reaction_windows WHERE group_id=?',(job['target_group'],))
         db.execute('DELETE FROM metrics WHERE key=?',('model_retry_after',))
