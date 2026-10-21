@@ -1,6 +1,6 @@
 # 终端控制台
 
-双击 `Surf Console.command`，或在项目目录运行 `python3 console.py`。不需要额外 UI 依赖。
+双击 `Surf Console.command`，或在项目目录运行 `python3 console.py`，默认启动 Lite。需要下述双窗界面时使用 `python3 console.py --full`。不需要额外 UI 依赖。
 
 左窗显示 QQ Helper 原始输出，右窗显示 surf bot 收件、worker 决策、发送回执和命令结果，底部始终可以输入。Tab 补全命令、服务子命令、群名和群号；首次显示多个候选，再按 Tab 循环选中。F6 或鼠标点击选择日志窗，↑/↓ 按显示行滚动，鼠标滚轮滚动，PgUp/PgDn 翻页，End 回到实时；左右键编辑输入，Ctrl-P/Ctrl-N 找回本次输入历史。Ctrl-U 清空输入。`/quit` 或 Ctrl-C 仅退出界面，两个后台服务继续运行。
 
@@ -69,3 +69,5 @@ python3 console.py --command '/worker 观察最新话题，不需要强行回复
 标准界面向上查看历史时，新消息不会把当前阅读位置推走；右上/左上的“历史”状态显示距离实时的行数。按 End 恢复跟随最新消息。每个日志窗独立保存滚动位置，长消息也能逐行查看。Lite 继续使用终端自身的滚动历史。
 
 macOS 旧版 curses 缺少第5按钮常量时，控制台直接解析 SGR 鼠标事件以支持双向滚轮；不把鼠标协议字节插入命令输入。关闭控制台会恢复终端鼠标模式。
+
+控制台默认以 Lite 启动。需要完整双窗时使用 `python3 console.py --full`。交互控制台设有单实例锁；重复启动会提示复用已有窗口，不影响QQ Helper和bot服务。单条 `--command` 操作不受此限制。

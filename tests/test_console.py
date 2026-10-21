@@ -58,3 +58,16 @@ class ConsoleTests(unittest.TestCase):
    with self.assertRaises(ValueError):console.helper(self.cfg,{},'wrap')
    kill.assert_not_called()
  def test_redact_json_tokens(self):self.assertNotIn('abc-secret',service_log.clean('{"token":"abc-secret"}'))
+
+ def test_lite_is_default_with_full_override(self):
+  from types import SimpleNamespace
+  with patch('console.ROOT',self.root):
+   self.assertTrue(console.lite_default(SimpleNamespace(full=False,lite=False)))
+   self.assertFalse(console.lite_default(SimpleNamespace(full=True,lite=False)))
+ def test_single_console_lock_released_on_close(self):
+  with patch('console.ROOT',self.root):
+   first=console.console_lock()
+   try:
+    with self.assertRaises(SystemExit):console.console_lock()
+   finally:first.close()
+   second=console.console_lock();second.close()
