@@ -264,3 +264,17 @@ class StickerReactionTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class PeerRepetitionTests(unittest.TestCase):
+ def test_rejects_stitching_peer_messages_with_filler(self):
+  from reply_quality import repeats_peer
+  payload={'unread_messages':[{'speaker':'2','text':'矿泉水都拧不开'},{'speaker':'2','text':'确实该被赶去睡'}]}
+  self.assertTrue(repeats_peer({'action':'reply','text':'矿泉水都拧不开，那确实只能被赶去睡了'},payload))
+  self.assertFalse(repeats_peer({'action':'reply','text':'建议给瓶盖也安排一个推理预算'},payload))
+ def test_explicit_requests_and_emoji_are_not_paraphrase_guard_targets(self):
+  from reply_quality import repeats_peer
+  payload={'unread_messages':[{'speaker':'2','text':'矿泉水都拧不开确实该被赶去睡'}]}
+  decision={'action':'reply','text':'矿泉水都拧不开确实该被赶去睡'}
+  self.assertFalse(repeats_peer(decision,dict(payload,pending_requests=[{'kind':'summary'}])))
+  self.assertFalse(repeats_peer({'action':'reply','text':'','emoticon':{'kind':'face','id':'1'}},payload))

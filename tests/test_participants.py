@@ -184,3 +184,23 @@ class ProfilingTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class WorkerRoleContextTests(unittest.TestCase):
+ def test_compact_handles_retain_owner_peer_bot_and_self_identity(self):
+  import identities
+  with tempfile.TemporaryDirectory() as root:
+   payload={'_identity_root':root,'_identity_bot':'9','_identity_owner':'1',
+    'member_profiles':[{'id':'1','current_judgment':{'kind':'human','source':'config'}},{'id':'2','current_judgment':{'kind':'bot','source':'app_rules'}}],
+    'member_memories':[{'user_id':'2','markdown':'large profile'}],'group_context':{'id':'3','name':'测试群'},'group_portrait':{'summary':'聊技术'},
+    'unread_messages':[{'speaker':'1','nickname':'MyCall','text':'我的模型在线'},{'speaker':'2','nickname':'鲸鲸','text':'我还要睡觉'},{'speaker':'9','nickname':'NOIP','text':'自己说过的话'}]}
+   result=identities.worker_payload(payload)
+   roles={row['alias']:row for row in result['group_context']['participants']}
+   self.assertEqual(roles['MyCall']['role'],'owner');self.assertEqual(roles['鲸鲸']['account_kind'],'bot')
+   self.assertEqual(result['bot_identity']['owner_alias'],'MyCall')
+   self.assertEqual(result['unread_messages'][-1]['line'],'Luna：自己说过的话')
+   self.assertNotIn('member_memories',result);self.assertNotIn('_identity_owner',result)
+   self.assertNotIn('participant_roles',result);self.assertNotIn('self_context',result)
+   self.assertEqual(result['group_context']['portrait'],{'summary':'聊技术'})
+   self.assertEqual(result['group_context']['name'],'测试群')
+   self.assertNotIn('group_portrait',result)

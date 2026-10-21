@@ -65,7 +65,7 @@ def worker_payload(payload):
   is_message=speaker is not None and 'text' in value
   alias=handle(speaker,value.get('nickname')) if is_message else None
   for key,item in value.items():
-   if key in ('_identity_root','_identity_bot'):continue
+   if key in ('_identity_root','_identity_bot','_identity_owner'):continue
    if key in ('member_profiles','member_memories'):continue
    if key=='_vision':result[key]=item;continue
    if key in ('user_id','speaker') and not is_message and isinstance(item,(str,int)):
@@ -79,6 +79,28 @@ def worker_payload(payload):
   return result
  try:
   result=walk(payload)
+  roles=[]
+  owner=str(payload.get('_identity_owner',''));bot=str(payload.get('_identity_bot',''))
+  for profile in payload.get('member_profiles',[]):
+   user=str(profile['id']);judgment=profile.get('current_judgment',{})
+   kind=judgment.get('kind','unknown')
+   roles.append({'alias':handle(user),'role':'self' if user==bot else 'owner' if user==owner else 'peer','account_kind':kind,'kind_source':judgment.get('source','unknown')})
+  names=['Luna']
+  archive=Path(root)/'archive.sqlite3'
+  if bot and archive.exists():
+   disk=sqlite3.connect(archive)
+   try:
+    group=str(payload.get('decision_scope',{}).get('group_id',''))
+    rows=disk.execute('SELECT raw_json,nickname FROM messages WHERE user_id=? AND group_id=? ORDER BY id DESC LIMIT 5',(bot,group)).fetchall()
+    for raw,name in rows:
+     if name and name!=bot and name not in names:names.append(name)
+     try:account=json.loads(raw).get('sender',{}).get('nickname')
+     except (ValueError,TypeError):account=None
+     if account and account!=bot and account not in names:names.append(account)
+   finally:disk.close()
+  self_context={'names':names,'owner_alias':handle(owner) if owner else None,'facts':['你就是当前在本群发言的Luna AI bot，不是聊天记录之外的旁观者。','你的服务由运营者运行。具体部署机器、持续在线时长和其他模型的归属需要证据，不能猜。'],'reference_policy':'结合指代、引用、成员角色和上下文识别隐含互动。讨论bot、模型、你的部署/能力/作息时可以与你有关，无需出现名字；但话题相关不等于明确叫你，也不能把别人的模型认成自己。'}
+  result['bot_identity']={**result.get('bot_identity',{}),**self_context}
+  result['group_context']={**result.get('group_context',{}),'participants':roles,'portrait':result.pop('group_portrait',{})}
   result['speaker_contract']='聊天行只有全局代号：内容，代号不是群名片。需要QQ号、用户名、群名片或画像时调用get_member(alias)。更新成员状态前先查询get_member获取真实user_id；不要把代号当user_id。称呼有可靠证据时调用set_member_alias(alias,name,evidence_event_key)。不要猜身份或合并同名成员。'
   return result
  finally:registry.close()
