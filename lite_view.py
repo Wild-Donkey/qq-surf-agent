@@ -22,14 +22,15 @@ def run(controller,root,completer):
  from prompt_toolkit.layout.controls import FormattedTextControl
  from prompt_toolkit.widgets import TextArea
  from prompt_toolkit.key_binding import KeyBindings
- from prompt_toolkit.filters import has_completions
+ from prompt_toolkit.filters import has_completions,Condition
  from prompt_toolkit.output import ColorDepth
  from prompt_toolkit.history import InMemoryHistory
  from prompt_toolkit.mouse_events import MouseEventType
  import lite_console,completion,service_log,chat_view
  from console import Controller
  from terminal_feed import Feed
- controller=controller or Controller();history=History();tail=Feed(root);bindings=KeyBindings()
+ controller=controller or Controller();history=History();tail=Feed(root);bindings=KeyBindings();copy_mode=False
+ copying=Condition(lambda:copy_mode)
  def scroll(amount):history.scroll(amount);app.invalidate()
  def mouse(event):
   if event.event_type==MouseEventType.SCROLL_UP:scroll(3);return None
@@ -44,8 +45,9 @@ def run(controller,root,completer):
   return [('',line+'\n',mouse) for line,_,_ in history.visible(size.columns,height)] or [('', '等待聊天记录…',mouse)]
  chat=Window(ScrollControl(rows),wrap_lines=False,always_hide_cursor=True)
  def status():
+  if copy_mode:return '复制模式 · 拖选后用终端复制快捷键 · F2恢复实时（日志继续保存）'
   if history.view.offset:return '历史 ↑'+str(history.view.offset)+'行 · 新增'+str(history.new)+'条 · End回实时'
-  return '实时 · 滚轮/↑↓/PgUp/PgDn滚动 · End回实时 · Tab补全 · /quit退出'
+  return '实时 · F2复制 · 滚轮/↑↓/PgUp/PgDn滚动 · End回实时 · Tab补全 · /quit退出'
  status_bar=Window(ScrollControl(status),height=1)
  command_lock=asyncio.Lock()
  async def execute(line):
@@ -55,28 +57,33 @@ def run(controller,root,completer):
   else:
    try:result=await asyncio.to_thread(controller.execute,line)
    except Exception as exc:result='操作失败：'+service_log.clean(str(exc))
-  history.append(service_log.clean(result).splitlines());service_log.event('console',result);app.invalidate()
+  history.append(service_log.clean(result).splitlines());service_log.event('console',result)
+  if not copy_mode:app.invalidate()
  def accept(buffer):
   line=buffer.text.strip()
   if line in ('/quit','/exit'):app.exit();return False
   if line:app.create_background_task(execute(line))
   return False
  entry=TextArea(height=1,prompt='> ',multiline=False,wrap_lines=False,completer=completer,
-                complete_while_typing=False,history=InMemoryHistory(),accept_handler=accept)
+                complete_while_typing=False,read_only=copying,history=InMemoryHistory(),accept_handler=accept)
  original_mouse=entry.control.mouse_handler
  def entry_mouse(event):
   if event.event_type in (MouseEventType.SCROLL_UP,MouseEventType.SCROLL_DOWN):return mouse(event)
   return original_mouse(event)
  entry.control.mouse_handler=entry_mouse
- @bindings.add('pageup')
+ @bindings.add('f2')
+ def toggle_copy(event):
+  nonlocal copy_mode
+  copy_mode=not copy_mode;app.invalidate()
+ @bindings.add('pageup',filter=~copying)
  def pageup(event):scroll(max(1,(chat.render_info.window_height if chat.render_info else 10)-1))
- @bindings.add('pagedown')
+ @bindings.add('pagedown',filter=~copying)
  def pagedown(event):scroll(-max(1,(chat.render_info.window_height if chat.render_info else 10)-1))
- @bindings.add('up',filter=~has_completions)
+ @bindings.add('up',filter=~has_completions & ~copying)
  def up(event):scroll(1)
- @bindings.add('down',filter=~has_completions)
+ @bindings.add('down',filter=~has_completions & ~copying)
  def down(event):scroll(-1)
- @bindings.add('end')
+ @bindings.add('end',filter=~copying)
  def end(event):history.live();app.invalidate()
  @bindings.add('c-c')
  def quit_or_clear(event):
@@ -85,12 +92,13 @@ def run(controller,root,completer):
  async def follow():
   while True:
    await asyncio.sleep(.25)
+   if copy_mode:continue
    try:lines=[chat_view.parse(line).text for line in tail.read()]
    except OSError as exc:service_log.event('console','lite tail retry error='+type(exc).__name__);continue
    if lines:history.append(lines);app.invalidate()
  def start():
   history.append([chat_view.parse(line).text for line in tail.read()][-2000:]);app.create_background_task(follow())
  app=Application(layout=Layout(HSplit([chat,status_bar,entry]),focused_element=entry),key_bindings=bindings,
-                 full_screen=True,mouse_support=True,color_depth=ColorDepth.DEPTH_1_BIT)
+                 full_screen=True,mouse_support=~copying,color_depth=ColorDepth.DEPTH_1_BIT)
  try:app.run(pre_run=start)
  except (EOFError,KeyboardInterrupt):pass

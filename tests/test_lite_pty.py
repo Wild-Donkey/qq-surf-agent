@@ -28,6 +28,15 @@ class LitePTYTest(unittest.TestCase):
     read_for(1)
     assert '窗口理解已经显示' in data.decode(errors='replace'),'application understanding missing from lite stream'
     assert b'realtime-while-typing' in data,repr(data[-5000:])
+    os.write(master,b'\x1bOQ');start=len(data);read_for(.5)
+    assert '复制模式' in data[start:].decode(errors='replace'),'F2 copy mode missing'
+    assert b'\x1b[?1000l' in data[start:],'mouse tracking still enabled during selection'
+    with log.open('a') as f:f.write('10-21 16:00:02 [info] bot | 接收 <- 群聊 [测试群(1)] [测试人(2)] copy-mode-postponed\n')
+    start=len(data);read_for(.5)
+    assert b'copy-mode-postponed' not in data[start:],'copy selection interrupted by log refresh'
+    os.write(master,b'\x1bOQ');start=len(data);read_for(.8)
+    assert b'copy-mode-postponed' in data[start:],'logs did not resume after copy mode'
+    assert b'\x1b[?1000h' in data[start:],'wheel tracking not restored'
     os.write(master,b'\x1b[5~');start=len(data);read_for(.5)
     assert '历史' in data[start:].decode(errors='replace'),'PageUp did not enter history'
     with log.open('a') as f:f.write('10-21 16:00:02 [info] bot | 接收 <- 群聊 [测试群(1)] [测试人(2)] held-until-live\n')

@@ -148,8 +148,9 @@ class UnifiedFeedTests(unittest.TestCase):
   import console
   screen=Mock();screen.getmaxyx.return_value=(30,120)
   with tempfile.TemporaryDirectory() as tmp,patch('console.ROOT',Path(tmp)),patch('console.Controller'),patch('console.avatar_palette.AvatarPalette'),patch('console.chat_view.Styles'),patch('console.curses.curs_set'),patch('console.curses.mousemask'),patch('console.sys.stdout',io.StringIO()),patch('console.terminal_mouse.Reader') as reader:
-   reader.return_value.get.side_effect=list('/quit\n')
+   reader.return_value.get.side_effect=[curses.KEY_F2,None,curses.KEY_F2]+list('/quit\n')
    console.run(screen)
   shown=[str(call.args[2]) for call in screen.addstr.call_args_list]
   self.assertTrue(any('QQ / 应用 / 理解' in line for line in shown))
+  self.assertTrue(any('复制模式：' in line for line in shown))
   self.assertNotIn('│',shown);self.assertFalse(any('surf bot / 操作结果' in line for line in shown))

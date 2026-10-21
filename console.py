@@ -9,7 +9,7 @@ import agent,qq,workflow,operator_control,service_log,completion,chat_view,avata
 ROOT=Path(__file__).resolve().parent
 HELP='''/groups  /use 群名或群号  /say 内容（或直接输入）  /takeover  /resume
 /paste  /worker prompt  /jobs  /status  /bot start|restart|stop  /helper status|start|wrap|stop
-/help  /quit  · Tab补全命令/群名，↑/↓或滚轮滚动，PgUp/PgDn翻页，End回到实时；退出界面不停止服务'''
+/help  /quit  · F2复制模式，Tab补全命令/群名，↑/↓或滚轮滚动，PgUp/PgDn翻页，End回到实时；退出界面不停止服务'''
 
 def alive(path):
  try:pid=int(path.read_text());os.kill(pid,0);return pid
@@ -144,6 +144,7 @@ def run(screen):
  controller=Controller();buffers=[collections.deque(maxlen=2000)];views=[log_scroll.Viewport(True)];focus=0
  feed=Feed(ROOT)
  outputs=queue.Queue();pool=concurrent.futures.ThreadPoolExecutor(max_workers=1)
+ copy_mode=False
  text='';cursor=0;history=[];history_index=0;completer=completion.Completer();groups=[];groups_checked=0
  buffers[0].extend(HELP.splitlines())
  if not feed.tails[0][1].path.exists():buffers[0].append('QQ Helper 尚未封装日志；/helper wrap 接管当前实例，或 /helper start 启动。')
@@ -156,6 +157,11 @@ def run(screen):
   except curses.error:pass
  try:
   while True:
+   if copy_mode:
+    key=mouse_reader.get(screen)
+    if key==curses.KEY_F2:
+     copy_mode=False;curses.mousemask(curses.ALL_MOUSE_EVENTS);sys.stdout.write('\x1b[?1000h\x1b[?1006h');sys.stdout.flush()
+    continue
    fresh=feed.read();views[0].arrived(fresh);buffers[0].extend(fresh)
    while not outputs.empty():
     fresh=outputs.get().splitlines();views[0].arrived(fresh);buffers[0].extend(fresh)
@@ -178,7 +184,7 @@ def run(screen):
     choices=completer.items if completer.last==(text,cursor) else completion.candidates(text[:cursor],groups)
     index=max(0,completer.index) if completer.last==(text,cursor) else 0
     for row,item in enumerate(choices[index:index+3]):put(height-6+row,0,('→ ' if row==0 else '  ')+item[0]+' · '+item[1],width-1)
-    put(height-3,0,'Tab补全 · ↑↓/滚轮滚动 · PgUp/PgDn翻页 · End实时 · /help · /quit',width-1)
+    put(height-3,0,'F2复制 · Tab补全 · ↑↓/滚轮滚动 · PgUp/PgDn翻页 · End实时 · /help · /quit',width-1)
     start=max(0,cursor-(width-6)//2)
     put(height-2,0,'> '+text[start:],width-1)
     try:screen.move(height-2,min(width-2,2+display_width(text[start:cursor])))
@@ -198,7 +204,9 @@ def run(screen):
     if line:
      history.append(line);history_index=len(history);views[0].arrived(['> '+service_log.clean(line)]);buffers[0].append('> '+service_log.clean(line));pool.submit(task,line)
    elif key=='\t':text,cursor=completer.tab(text,cursor,groups)
-   elif key==curses.KEY_F6:focus=0
+   elif key==curses.KEY_F2:
+    copy_mode=True;curses.mousemask(0);sys.stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l');sys.stdout.flush()
+    put(height-3,0,'复制模式：拖选后用终端复制快捷键；F2恢复实时（日志继续保存）'+' '*width,width-1);screen.refresh()
    elif key==curses.KEY_UP:views[focus].scroll(1)
    elif key==curses.KEY_DOWN:views[focus].scroll(-1)
    elif key==curses.KEY_PPAGE:views[focus].scroll(max(1,height-10))
