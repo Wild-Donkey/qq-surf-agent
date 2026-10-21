@@ -60,11 +60,11 @@ def observe(db,event,cfg,text,now):
         set_profile(db,user,'unknown',0,'尚未判断','initial',now)
 
 
-def evidence(db,batch):
+def evidence(db,batch,include_samples=True):
     result=[]
     for user in dict.fromkeys(str(row['user_id']) for row in batch):
         profile=db.execute('SELECT kind,confidence,reason,source FROM speaker_profiles WHERE user_id=?',(user,)).fetchone()
-        samples=db.execute('SELECT event_key,group_id,text,created FROM speaker_events WHERE user_id=? ORDER BY created DESC LIMIT 20',(user,)).fetchall()
+        samples=db.execute('SELECT event_key,group_id,text,created FROM speaker_events WHERE user_id=? ORDER BY created DESC LIMIT 20',(user,)).fetchall() if include_samples else []
         result.append({'id':user,'current_judgment':dict(profile) if profile else {'kind':'unknown'},'recent_samples':[r['text'][:180] for r in reversed(samples)],'evidence_records':[dict(r) for r in reversed(samples)]})
     return result
 

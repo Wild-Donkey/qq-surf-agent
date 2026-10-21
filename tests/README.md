@@ -24,6 +24,9 @@ python3 -m unittest discover -s tests -p 'test_protocol.py' -v
 | test_model.py | ChatGPT 鉴权、模型重试计费、互联网工具 |
 | test_memory.py | 记忆存储、维护与原话归档 |
 | test_social.py | 群聊处理、窗口合并、草稿时效与任务优先级 |
+| test_context_memory.py | 话题驱动检索、去重视图、治理备份和证据合并 |
+| test_clarification.py | 主动澄清、等待补充和回答后恢复待办 |
+| test_interactions.py | @、引用、群/好友双向戳一戳与会话范围校验 |
 | test_orientation.py | 群会话预读、按需回溯、来源隔离与发言门槛 |
 | test_context.py | 上下文检索、引用、局面理解与群隔离 |
 | test_participants.py | 人类活跃门槛、成员类型、稳定代号与历史画像 |

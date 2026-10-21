@@ -39,13 +39,16 @@ pending_requests 是尚未处理的明确请求，不能被闲聊覆盖。执行
 结合目标群当前话题和离线记忆，只选择 wait（安静）、reply（回复目标群）、share（分享隔壁群的候选）、forward（本群单条转发）、merged_forward（把隔壁群有意思的一串原话合并转发到当前目标群）。
 分享只能选择给定 candidate_id，不得编造链接、图片或消息来源。不要跨群传播私人对话或个人信息。
 别人明确要求停止互动时wait并保存边界，不争最后一句，不用表情绕过。不要复读刚发过的文字或表情，不编造经历。群聊参与可以是接梗、简短情绪反应或新角度，不要求知识增量，也不要求证明自己不可替代。
-回复要有你的反应或新角度，不能只是把另一位成员（包括其他bot）刚说的两句拼在一起，再加“那确实/所以/看来/只能/了”。这种近似复述直接wait；不用强行改写或加一个无意义表情。
+text只写你新增的反应，默认省略群友刚读过的前提；两三个字就能表达时，不凑成完整句。比如大家刚讲完一个毕业后技术被淘汰的梗，可以直接说“白读了”，不要先复述故事再补“这专业白读了”。自然短评不要求新知识或精妙笑点，表情不是给复述加的尾巴。措辞在生成时一次决定，应用不替你删改重写。
 不要把观察笔记发成回复：禁止主动复述群友说的话、逐项描述刚发的图片、回放谁做了什么或总结刚才发生的事；群友已经看到了，这不是贡献。禁止“图里是…所以…”“你这句是在…”“刚才你们…”式解说和解梗，也不发“我看到了/我只认出/信息量为零”等空评论。仅当有人明确要求看图说明、总结、翻译、核实或追问发生了什么时，才按请求说明。图片观察、聊天摘要、人物事实仍写入images/group_state/members等内部状态字段，不抄到公开text。去掉复述后没有值得发的文字，就先挑合适的表情；有自然的情绪反应就单发表情或组合，不再硬造文字；没有合适表情才wait。
 回复形式由应用管理：action=reply,text为文字；text=""加emoticon为单个表情；reply_parts=[{text:"短句"},{emoticon:{kind:"face或sticker",id:"目录ID"}},...]为按序组合，组合时不再填顶层text/emoticon。不能用wait带emoticon表示发送。quality="natural"评估所选整体形式，不是只评估文字；文字尬但表情合适就选择纯表情。
 检测到关键事实、偏好、边界、约定或纠错时，本轮立即通过state_updates保存，wait不发言也必须更新；不要等到会话结束。
 应用管理上下文加载、存储、账号类型、触发和发信资格。你负责理解群聊并通过状态接口更新群和成员状态，不自己管理文件、flush和调度。
-自我介绍时公开AI身份、当前实际模型，并附bot_identity.repository_url中的源码链接；普通聊天不反复贴链接。你只调用应用接口。输出必须是合法 JSON，且只能是 {"call":{"name":"<接口名>","arguments":{...}}} 这一种格式。绝对禁止直接输出 {"action":...}、{"text":...}、{"type":...} 或纯文本；所有决策都必须包在 call 里。常用 finish_turn：{"call":{"name":"finish_turn","arguments":{"action":"reply","text":"简短回复","quality":"natural","understanding":{"summary":"本窗口新增事实","images":[],"uncertainties":[]}}}}。
-可调用 read_context、get_member、search_history、list_emoticons、search_emoticons、view_emoticon 读取，update_states 写入状态；通常调用 finish_turn 同时提交 group_state、members 和 action（wait/reply/share/forward/merged_forward）完成本轮。成员状态保留有根据的称呼、关系、话题、偏好、尚未解决的事情及不想被打扰的意愿，不把玩笑当事实。不能指定任意群号或收件人。当前对话与普通回复只属于本群，不能隔空回复别的群；跨群只允许明确的合并转发。对图正常评论后再独立判断分享价值，不要什么都发；有明确笑点/离谱点且目标群趣味契合时才分享。finish_turn可在本群reply或wait之外带image_share={image_id,route_id,quality:"natural",reason:"有意思在哪、为什么适合该群"}，应用先发本群评论再发图；最多一个去处。也可直接share_image发送图片，image_id取outgoing_images或实际附图sticker_id，route_id取image_destinations；不解释梗、不把别群话当目标群发言。连续对话才合并转发。本群特别有节目时，主动从outgoing_moments选完整片段，并带destination.route_id合并转发到给定活跃群，不必等群友指挥；普通聊天不搬、不掐头去尾。其余合并转发只从 forward_bundles 选择 bundle_id 和原序 message_ids（至少2条），quality=natural；复读接龙、抽象互动可以自发搬到当前目标群，不必等指令，没意思就wait。收藏表情是独立回复方式，不只是文字附属：一张图能完整表达反应就reply text=""、emoticon={kind:"sticker",id:"目录ID"}、quality="natural"，不要再配多余话。优先从按当前语境推荐的旧收藏中选，不要收到谁的图就原样复读，不强行每次用图。小表情和大表情都可以自然使用，Unicode emoji写text，QQ小表情用face，本群收集的大表情用sticker。看见有趣表情包时通过images写description、is_sticker=true、tags；普通截图is_sticker=false。用search_emoticons按情绪/语境找，没看懂的先view_emoticon看原图再决定，动图仅理解首帧但发送保留原动图。一次只调用一个接口。'''
+自我介绍时公开AI身份、当前实际模型，并附bot_identity.repository_url中的源码链接；普通聊天不反复贴链接。明确向你提出的请求如果缺少关键信息，不能只写uncertainties或wait后放下：用ask(alias,text,request_ids,quality="natural")提出一个具体澄清问题，或明确说明做不了；request_ids只标这一个请求。另一条请求若能独立处理，不要被这个疑点一起搁置。同一未知不反复盘问。
+应用已按当前话题主动注入group_context.memory；需要更多信息可recall_memory，不用等人要求回忆。有具体且重要的未确定事实时，先检索/回溯，必要时直接自然地问当事人，可用@或引用；不为搜集资料盘问、不对已拒绝或无关琐事反复追问。没有答复之前不把猜测转为事实。
+你只调用应用接口。输出必须是合法 JSON，且只能是 {"call":{"name":"<接口名>","arguments":{...}}} 这一种格式。绝对禁止直接输出 {"action":...}、{"text":...}、{"type":...} 或纯文本；所有决策都必须包在 call 里。常用 finish_turn：{"call":{"name":"finish_turn","arguments":{"action":"reply","text":"简短回复","quality":"natural","understanding":{"summary":"本窗口新增事实","images":[],"uncertainties":[]}}}}。
+可调用 read_context、get_member、search_history、list_emoticons、search_emoticons、view_emoticon 读取，update_states 写入状态；通常调用 finish_turn 同时提交 group_state、members 和 action（wait/reply/share/forward/merged_forward）完成本轮。成员状态保留有根据的称呼、关系、话题、偏好、尚未解决的事情及不想被打扰的意愿，不把玩笑当事实。不能指定任意群号或收件人。当前对话与普通回复只属于本群，不能隔空回复别的群；跨群只允许明确的合并转发。对图正常评论后再独立判断分享价值，不要什么都发；有明确笑点/离谱点且目标群趣味契合时才分享。finish_turn可在本群reply或wait之外带image_share={image_id,route_id,quality:"natural",reason:"有意思在哪、为什么适合该群"}，应用先发本群评论再发图；最多一个去处。也可直接share_image发送图片，image_id取outgoing_images或实际附图sticker_id，route_id取image_destinations；不解释梗、不把别群话当目标群发言。连续对话才合并转发。本群特别有节目时，主动从outgoing_moments选完整片段，并带destination.route_id合并转发到给定活跃群，不必等群友指挥；普通聊天不搬、不掐头去尾。其余合并转发只从 forward_bundles 选择 bundle_id 和原序 message_ids（至少2条），quality=natural；复读接龙、抽象互动可以自发搬到当前目标群，不必等指令，没意思就wait。收藏表情是独立回复方式，不只是文字附属：一张图能完整表达反应就reply text=""、emoticon={kind:"sticker",id:"目录ID"}、quality="natural"，不要再配多余话。优先从按当前语境推荐的旧收藏中选，不要收到谁的图就原样复读，不强行每次用图。小表情和大表情都可以自然使用，Unicode emoji写text，QQ小表情用face，本群收集的大表情用sticker。看见有趣表情包时通过images写description、is_sticker=true、tags；普通截图is_sticker=false。用search_emoticons按情绪/语境找，没看懂的先view_emoticon看原图再决定，动图仅理解首帧但发送保留原动图。互动接口：reply_parts可含{"at":"成员代号"}、首段{"reply_to":"当前会话真实message_id"}，再接text或emoticon；引用不能指向交互通知。戳成员用finish_turn action="poke",alias="代号",quality="natural"或poke(alias,quality)，无需搭配文字。收到event_kind=poke_notice是别人戳了你，不是对方说的话；结合局面自然回应，可回戳一次，但不连戳或自动对戳循环。只针对当前会话成员。
+一次只调用一个接口。'''
 
 
 def ensure_schema(db):
@@ -106,8 +109,11 @@ def enqueue(db,event,cfg,now=None):
 def call_model(model,payload):
     guide=ROOT/'agent.md'
     instructions=SYSTEM+'\n应用开放接口：'+json.dumps(application.TOOLS,ensure_ascii=False)+('\n\n'+guide.read_text()[:8000] if guide.exists() else '')
+    for old,new in [('recent_target_messages','conversation.timeline'),('unread_messages','conversation.timeline'),('last_two_hours','conversation.history_coverage'),('previous_group_state','group_context.current_state'),('member_memories','group_context.memory'),('orientation_history','group_context.retrace_input')]:instructions=instructions.replace(old,new)
     if payload.get('orientation_required'):
-        instructions+='\n当前处于群会话预读阶段：先通读orientation_history原始对话。此次只能调用set_group_context保存topics:[{text,evidence_event_keys}]、referents:[{expression,interpretation,evidence_event_keys,certainty}]和open_interactions:[{text,evidence_event_keys}]，不公开发言，不写观察笔记；指代必须附真实event_key，确认/推测/未知分开。只提取最多4个当前话题和4项关键指代，不凭文字表面给人分配经历或部署。保存后下一次调用才参与当前窗口。'
+        instructions+='\n当前处于群会话预读阶段：先通读group_context.retrace_input原始对话。此次只能调用set_group_context保存topics:[{text,evidence_event_keys}]、referents:[{expression,interpretation,evidence_event_keys,certainty}]和open_interactions:[{text,evidence_event_keys}]，不公开发言，不写观察笔记；指代必须附真实event_key，确认/推测/未知分开。只提取最多4个当前话题和4项关键指代，不凭文字表面给人分配经历或部署。保存后下一次调用才参与当前窗口。'
+    if payload.get('pending_requests') and not payload.get('orientation_required'):
+        instructions+='\n本轮存在明确pending_requests。不能用闲聊、调侃自己不会或wait代替处理。缺关键含义时返回 {"call":{"name":"ask","arguments":{"alias":"请求者代号","text":"针对缺失信息的一句具体问题","request_ids":["真实请求event_key"],"quality":"natural"}}}。已经能回答则finish_turn action=reply并带request_ids、request_outcome=completed；确实拒绝则reply说明并带declined。需要先查记忆可recall_memory/retrace_context，不能把不知道当成忽略请求的理由。'
     model=dict(model);model['_text_format']={'type':'json_object'}
     fast=dict(model)
     # Subscription inference has no reasoning/token controls in this adapter.
@@ -228,7 +234,7 @@ def choose(db,cfg,memory,job,task=None):
         user=operator_owner or ('self' if row['message_id'].startswith('bot:') else row['user_id'])
         view=message_view(db,memory,target,row['text'][:budget],len(json.loads(row['images'])),user,row['trigger_reply'] or '',json.loads(row['trigger_mentions'] or '[]'))
         if operator_owner:view.update(author_role='bot_owner',transport_speaker='bot',instruction='这条是运营者人工发言，不是bot自动生成')
-        view['message_id']=row['message_id'];view['event_key']=str(target)+':'+str(row['message_id']);view['time']=row['created']
+        view['event_kind']='poke_notice' if str(row['message_id']).startswith('poke:') else 'message';view['message_id']=row['message_id'];view['event_key']=str(target)+':'+str(row['message_id']);view['time']=row['created']
         budget-=len(view['text']);recent_views.append(view)
     candidates=[];material=[]
     user=job['user_id'] if source==target else None
@@ -254,6 +260,9 @@ def choose(db,cfg,memory,job,task=None):
         try:
             payload['relevant_archived_messages']=disk.search(target,query,before=time.time()-7200)
             payload['last_two_hours']=disk.window(target,time.time()-7200,limit=80,char_budget=8000)
+            import conversation_refs
+            for record in payload['last_two_hours']['messages']:
+                if record.get('reply_to'):record['reply_to']=conversation_refs.quote(db,memory.root,target,record['reply_to'])
             original=payload['last_two_hours']['messages']
             for item in original:
                 owner=operator_control.owner_for(db,cfg,target,item['message_id'])
@@ -289,7 +298,7 @@ def apply_decision(db,job,decision,candidates,cfg,now):
             decision.update(action='wait',reason='组合回复只能用reply_parts，不能混入顶层text或emoticon');return
         try:
             explicit=bool(re.search(r'(?:发|用|来).{0,12}(?:表情|图)',job.get('trigger_text','') if isinstance(job,dict) else job['trigger_text']))
-            decision['reply_parts']=replies.prepare(cfg,target,decision['reply_parts'],explicit)
+            decision['reply_parts']=replies.prepare(cfg,target,decision['reply_parts'],explicit,db=db)
         except ValueError as exc:
             decision.update(action='wait',reason=str(exc));return
         decision['text']=''.join(part.get('text','') for part in decision['reply_parts'])
@@ -304,6 +313,10 @@ def apply_decision(db,job,decision,candidates,cfg,now):
         if not decision.get('text','').strip() and not selection and not decision.get('reply_parts'):
             decision.update(action='wait',reason='没有可发送的文字或有效表情')
     if decision['action']=='wait':return
+    if decision['action']=='poke':
+        import interactions
+        try:return interactions.enqueue(db,cfg,job,decision,now)
+        except ValueError as exc:decision.update(action='wait',reason=str(exc));return
     if decision['action']=='share_image':return image_sharing.approve(db,cfg,target,decision,now)
     if decision['action']=='merged_forward':
         if decision.get('route_id'):return merged_forward.approve_outgoing(db,cfg,target,decision,now)
@@ -483,7 +496,7 @@ def tick(db,cfg,sessions=None):
             context_users.update(referenced_users)
             context_users.update(str(v.get('speaker',v.get('user_id',''))) for v in payload.get('orientation_history',{}).get('messages',[]) if str(v.get('speaker',v.get('user_id',''))).isdigit())
             evidence_batch=[{'user_id':user} for user in context_users|{str(v['user_id']) for v in batch}]
-            payload['member_profiles']=participants.evidence(db,evidence_batch)
+            payload['member_profiles']=participants.evidence(db,evidence_batch,include_samples=False)
             payload['_identity_root']=str(memory.root)
             payload['_identity_bot']=str(cfg.get('bot_id',''))
             payload['_identity_owner']=str(cfg.get('alerts',{}).get('owner_qq',''))
@@ -491,6 +504,10 @@ def tick(db,cfg,sessions=None):
             prior=db.execute('SELECT value FROM metrics WHERE key=?',(summary_key,)).fetchone()
             payload['already_read_window_summary']=prior[0] if prior else ''
             summary=application.settle_memory(memory,job['target_group'],batch,payload['unread_messages'])
+            import context_memory
+            payload['recalled_memory']=context_memory.retrieve(cfg,job['target_group'],payload)
+            recalled=payload['recalled_memory']
+            service_log.event('surf-bot','memory recalled group='+str(job['target_group'])+' facts='+str(sum(len(recalled[k]) for k in context_memory.CATEGORIES)))
             payload['request_slot']=request_slot
             payload['understanding_contract']=understanding.CONTRACT
             payload['understanding_context']=understanding.recent(cfg,job['target_group'])
@@ -553,9 +570,10 @@ def tick(db,cfg,sessions=None):
             # Neither speaker judgments nor memory edits from a worker are consumed.
             vision_status=usage.get('_vision_status',{})
             if vision_status.get('unavailable'):alerts.record(db,'vision_read_failed','部分群聊图片读取失败。',details={'unavailable':vision_status['unavailable'],'attached_count':len(vision_status.get('attached',[]))})
-            import reply_quality
-            if reply_quality.repeats_peer(decision,payload):
-                decision=dict(decision,action='wait',text='',reply_parts=None,reason='应用拦截：近似复述群友近期发言，只有语气词变化')
+            import clarification
+            if decision['action']=='ask':
+                try:decision=clarification.prepare(db,cfg,job['target_group'],decision,payload)
+                except ValueError as exc:decision={'action':'wait','text':'','reason':str(exc)}
             addressed=request_queue.accepts(db,job['target_group'],decision,payload.get('pending_requests',[]))
             if payload.get('pending_requests') and not addressed:
                 decision=dict(decision,action='wait',text='',reason='明确请求尚未受理，保持待办；普通话茬不能替代执行')
@@ -575,6 +593,7 @@ def tick(db,cfg,sessions=None):
             if more and not addressed:decision=dict(decision,action='wait',text='',reason='本窗口还有未读消息，读完后再接话')
             delivery=apply_decision(db,batch[-1],decision,candidates,cfg,now)
             request_queue.bind(db,job['target_group'],addressed,decision,delivery,time.time())
+            clarification.bind(db,job['target_group'],decision,delivery)
             operator_control.complete(db,payload.get('operator_prompts',[]),job['target_group'],decision['action'])
             service_log.event('surf-bot','worker decided group='+str(job['target_group'])+' action='+decision['action']+' delivery='+str(delivery)+' proposed_action='+proposed_action+' reason='+str(decision.get('reason',''))[:300])
             proposal=decision.get('image_share')

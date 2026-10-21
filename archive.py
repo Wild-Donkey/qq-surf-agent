@@ -83,11 +83,11 @@ class Archive:
             with self.db:self.db.execute('UPDATE messages SET exported=1 WHERE id=?',(row['id'],))
 
     def window(self,group,since,limit=300,char_budget=30000):
-        rows=self.db.execute('SELECT message_id,user_id,nickname,text,created FROM messages WHERE group_id=? AND created>=? ORDER BY created DESC LIMIT ?',(str(group),since,limit)).fetchall()
+        rows=self.db.execute('SELECT message_id,user_id,nickname,text,reply_to,mentions,created FROM messages WHERE group_id=? AND created>=? ORDER BY created DESC LIMIT ?',(str(group),since,limit)).fetchall()
         total=self.db.execute('SELECT count(*) FROM messages WHERE group_id=? AND created>=?',(str(group),since)).fetchone()[0]
         result=[];used=0
         for row in rows:
-            item=dict(row);size=len(item['text'])
+            item=dict(row);item['mentions']=json.loads(item['mentions'] or '[]');size=len(item['text'])
             if used+size>char_budget:break
             result.append(item);used+=size
         return {'messages':list(reversed(result)),'total_messages':total,'included_messages':len(result),'incomplete':len(result)<total}

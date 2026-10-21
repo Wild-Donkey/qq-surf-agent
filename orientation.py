@@ -33,14 +33,16 @@ def save(cfg,group,payload,args):
  if set(args)-{'topics','referents','open_interactions'}:raise ValueError('invalid_orientation_fields')
  topics=args.get('topics',[]);refs=args.get('referents',[]);interactions=args.get('open_interactions',[])
  keys={v.get('event_key') for v in payload['orientation_history']['messages'] if v.get('event_key')}
+ def clean_evidence(values):
+  if not isinstance(values,list):return []
+  return [k for k in values if isinstance(k,str) and k in keys][:8]
  def notes(values):
   if not isinstance(values,list) or len(values)>8:raise ValueError('invalid_orientation_notes')
   result=[]
   for note in values:
    if isinstance(note,str):note={'text':note,'evidence_event_keys':[]}
    if not isinstance(note,dict) or set(note)-{'text','evidence_event_keys'} or not isinstance(note.get('text'),str) or len(note['text'])>500:raise ValueError('invalid_orientation_notes')
-   evidence=note.get('evidence_event_keys',[])
-   if not isinstance(evidence,list) or len(evidence)>8 or any(not isinstance(k,str) or k not in keys for k in evidence):raise ValueError('orientation_evidence_not_in_transcript')
+   evidence=clean_evidence(note.get('evidence_event_keys',[]))
    result.append({'text':note['text'],'evidence_event_keys':evidence})
   return result
  topics=notes(topics);interactions=notes(interactions)
@@ -49,9 +51,12 @@ def save(cfg,group,payload,args):
   if not isinstance(ref,dict) or set(ref)!={'expression','interpretation','evidence_event_keys','certainty'}:raise ValueError('invalid_orientation_reference')
   if ref['certainty'] not in ('confirmed','tentative','unknown'):raise ValueError('invalid_orientation_certainty')
   if any(not isinstance(ref[k],str) or len(ref[k])>500 for k in ('expression','interpretation')):raise ValueError('invalid_orientation_reference')
-  evidence=ref['evidence_event_keys']
-  if not isinstance(evidence,list) or len(evidence)>8 or any(not isinstance(k,str) or k not in keys for k in evidence) or ref['certainty']=='confirmed' and not evidence:raise ValueError('orientation_evidence_not_in_transcript')
- value={'topics':topics,'referents':refs,'open_interactions':interactions,'coverage':payload['orientation_history']['coverage'],'updated':time.time()}
+  evidence=clean_evidence(ref['evidence_event_keys'])
+  ref['evidence_event_keys']=evidence
+  if ref['certainty']=='confirmed' and not evidence:ref['certainty']='tentative'
+ value={'schema_version':1,'topics':topics,'referents':refs,'open_interactions':interactions,'coverage':payload['orientation_history']['coverage'],'updated':time.time()}
+ from context_contract import check
+ check('Orientation',value)
  atomic_write(Path(cfg['context_dir'])/'groups'/safe_id(group)/'orientation.json',json.dumps(value,ensure_ascii=False,indent=2)+'\n')
  payload.setdefault('group_context',{})['orientation']=value;payload['orientation_required']=False
  payload.pop('orientation_history',None)

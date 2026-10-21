@@ -78,7 +78,16 @@ def worker_payload(payload):
    result[key]=walk(item,details)
   return result
  try:
-  result=walk(payload)
+  import context_memory
+  for row in reversed(payload.get('recent_target_messages',[])+payload.get('unread_messages',[])):
+   user=str(row.get('speaker',row.get('user_id','')))
+   if user.isdigit() and user!=str(payload.get('_identity_bot','')):registry.alias(user,row.get('nickname'))
+  normalized=dict(payload)
+  group_id=str(payload.get('decision_scope',{}).get('group_id',''))
+  history=dict(payload.get('last_two_hours',{}))
+  history['messages']=[{**row,'event_key':row.get('event_key') or (group_id+':'+str(row['message_id']) if row.get('message_id') is not None else None)} for row in history.get('messages',[])]
+  normalized['last_two_hours']=history
+  result=walk(context_memory.project(normalized))
   roles=[]
   owner=str(payload.get('_identity_owner',''));bot=str(payload.get('_identity_bot',''))
   for profile in payload.get('member_profiles',[]):
@@ -102,5 +111,7 @@ def worker_payload(payload):
   result['bot_identity']={**result.get('bot_identity',{}),**self_context}
   result['group_context']={**result.get('group_context',{}),'participants':roles,'portrait':result.pop('group_portrait',{})}
   result['speaker_contract']='聊天行只有全局代号：内容，代号不是群名片。需要QQ号、用户名、群名片或画像时调用get_member(alias)。更新成员状态前先查询get_member获取真实user_id；不要把代号当user_id。称呼有可靠证据时调用set_member_alias(alias,name,evidence_event_key)。不要猜身份或合并同名成员。'
+  from context_contract import check
+  check('WorkerContext',result)
   return result
  finally:registry.close()

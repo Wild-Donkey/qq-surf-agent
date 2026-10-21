@@ -111,10 +111,10 @@ class IdentityTests(unittest.TestCase):
     'last_two_hours':{'messages':[{'user_id':'1','nickname':'card','text':'earlier'}]},
     'tool_results':[{'call':{'name':'get_member'},'result':{'user_id':'1','memory':'requested'}}]}
    out=identities.worker_payload(payload)
-   self.assertEqual(out['unread_messages'][0]['line'],'MyCall：hi')
-   self.assertEqual(out['unread_messages'][0]['reply_to']['line'],'老崔：hello')
-   self.assertEqual(out['last_two_hours']['messages'][0]['line'],'MyCall：earlier')
-   self.assertNotIn('member_memories',out);self.assertNotIn('nickname',out['unread_messages'][0])
+   self.assertEqual(next(v for v in out['conversation']['timeline'] if v.get('line')=='MyCall：hi')['line'],'MyCall：hi')
+   self.assertEqual(next(v for v in out['conversation']['timeline'] if v.get('line')=='MyCall：hi')['reply_to']['line'],'老崔：hello')
+   self.assertEqual(out['conversation']['timeline'][0]['line'],'MyCall：earlier')
+   self.assertNotIn('member_memories',out);self.assertNotIn('nickname',next(v for v in out['conversation']['timeline'] if v.get('line')=='MyCall：hi'))
    self.assertEqual(out['tool_results'][0]['result']['user_id'],'1')
    self.assertEqual(payload['unread_messages'][0]['speaker'],'1')
  def test_alias_updates_require_visible_evidence_and_context(self):
@@ -198,9 +198,17 @@ class WorkerRoleContextTests(unittest.TestCase):
    roles={row['alias']:row for row in result['group_context']['participants']}
    self.assertEqual(roles['MyCall']['role'],'owner');self.assertEqual(roles['鲸鲸']['account_kind'],'bot')
    self.assertEqual(result['bot_identity']['owner_alias'],'MyCall')
-   self.assertEqual(result['unread_messages'][-1]['line'],'Luna：自己说过的话')
+   self.assertEqual(result['conversation']['timeline'][-1]['line'],'Luna：自己说过的话')
    self.assertNotIn('member_memories',result);self.assertNotIn('_identity_owner',result)
    self.assertNotIn('participant_roles',result);self.assertNotIn('self_context',result)
    self.assertEqual(result['group_context']['portrait'],{'summary':'聊技术'})
    self.assertEqual(result['group_context']['name'],'测试群')
    self.assertNotIn('group_portrait',result)
+
+
+class ProfileReferenceCacheTests(unittest.TestCase):
+ def test_member_cache_stores_only_archive_keys(self):
+  state={'members':[{'id':'7','chunks':[[{'event_key':'1:2','time':100,'text':'不应再复制这条个人原话'}]],'notes':[],'index':0,'count':1}]}
+  self.assertTrue(profiling.convert_member_cache(state))
+  member=state['members'][0];self.assertNotIn('chunks',member);self.assertEqual(member['chunk_keys'],[['1:2']])
+  self.assertNotIn('不应再复制这条个人原话',json.dumps(member,ensure_ascii=False))

@@ -6,6 +6,8 @@ import archive,agent,model_gate
 import memory_store
 from protocol import parse_json
 
+MEMORY_POLICY='只提取有用途的称呼、稳定事实、偏好、关系、边界与具体未知；禁止逐句复述、引语合集和按人保存聊天流水。群归档已有原话；画像不是文风模仿或训练材料。一个事实保留一条、附来源；已纠正/解决的未知不要继续罗列。'
+
 GROUP_MAP='record_profile_notes'
 GROUP_FINAL='publish_group_profile'
 MEMBER_FINAL='publish_member_profile'
@@ -57,6 +59,29 @@ def snapshot_person(cfg,user):
    result.append({'event_key':row['group_id']+':'+row['message_id'],'speaker':row['user_id'],'nickname':row['nickname'],'time':row['created'],'text':row['text'],'mentions':json.loads(row['mentions']),'image_count':len(json.loads(row['images'])),'visual_notes':notes})
   return result
  finally:disk.close()
+
+def reference_plan(rows):
+ return {'plan_version':1,'chunk_keys':[[r['event_key'] for r in part] for part in chunks(rows)],'range':{'first':min((r['time'] for r in rows),default=None),'last':max((r['time'] for r in rows),default=None)}}
+
+def convert_member_cache(state):
+ changed=False
+ for member in state.get('members',[]):
+  if 'chunks' not in member:continue
+  rows=[row for part in member['chunks'] for row in part]
+  if not all(isinstance(row,dict) and row.get('event_key') and 'time' in row for row in rows):continue
+  member.update(reference_plan(rows));member.pop('chunks');changed=True
+ return changed
+
+def read_keys(cfg,keys):
+ disk=archive.Archive(cfg['context_dir']);result=[]
+ try:
+  for key in keys:
+   group,mid=key.split(':',1);row=disk.get(group,mid)
+   if row is None:raise ValueError('profile_source_message_missing')
+   notes=[v[0] for v in disk.db.execute('SELECT description FROM visual_notes WHERE group_id=? AND message_id=?',(group,mid))]
+   result.append({'event_key':key,'speaker':row['user_id'],'nickname':row['nickname'],'time':row['created'],'text':row['text'],'mentions':json.loads(row['mentions']),'image_count':len(json.loads(row['images'])),'visual_notes':notes})
+ finally:disk.close()
+ return result
 
 def fetch_page(db,cfg,api,group,state):
  settings=cfg.get('profiling',{});request={'group_id':int(group),'count':settings.get('page_size',200),'disable_get_url':True,'parse_mult_msg':False,'reverse_order':False}
@@ -121,7 +146,7 @@ def infer(db,cfg,operation,payload,invoke=None):
    definition='GroupPortraitInput' if operation==GROUP_FINAL else 'PersonPortraitInput'
    payload['schema']={'$defs':{key:memory_store.SCHEMA['$defs'][key] for key in ('FactInput','RelationInput',definition)},'$ref':'#/$defs/'+definition}
    instructions+='\n本次必须使用结构化画像接口：arguments唯一字段为profile，值为符合给定schema的对象，所有字段都要提供，不知道的数组用[]。不返回text或Markdown；事实附完整event_key证据，置信度反映支持程度，不能用高置信度无证据断言。'
-  raw,usage=social.generate_text(model,instructions,payload);value=parse_json(raw,'profile_api')
+  raw,usage=social.generate_text(model,MEMORY_POLICY+'\n'+instructions,payload);value=parse_json(raw,'profile_api')
   call=value.get('call',{});args=call.get('arguments',{})
   if set(value)!={'call'} or call.get('name')!=operation:raise ValueError('invalid_profile_api_call')
   if structured:
@@ -142,6 +167,10 @@ def tick(db,cfg,api,invoke=None):
  if not job:return False
  group=job['group_id'];path=state_path(cfg,group)
  state=json.loads(path.read_text()) if path.exists() else {'phase':'fetch','pages':0,'fetched':0}
+ if convert_member_cache(state):
+  backup=Path(cfg['context_dir'])/'maintenance'/'profile-cache-v1'/str(group)/'progress.json'
+  if not backup.exists():atomic_write(backup,path.read_text())
+  atomic_write(path,json.dumps(state,ensure_ascii=False,indent=2)+'\n')
  phase=state['phase']
  if phase=='fetch':fetch_page(db,cfg,api,group,state);return True
  coverage={'messages':state['total'],'range':state.get('range'),'pages':state['pages'],'history_limit':state.get('history_limit','已到配置取样上限或可见历史边界')}
@@ -165,24 +194,29 @@ def tick(db,cfg,api,invoke=None):
   state['members']=[]
   for user,rows in sorted(by_user.items(),key=lambda pair:(-len(pair[1]),pair[0])):
    if cfg.get('memory_schema',{}).get('enabled'):rows=snapshot_person(cfg,user) or rows
-   state['members'].append({'id':user,'chunks':chunks(rows),'notes':[],'index':0,'count':len(rows)})
+   plan={'id':user,**reference_plan(rows),'notes':[],'index':0,'count':len(rows)}
+   from context_contract import check
+   check('ProfileMemberPlan',plan)
+   state['members'].append(plan)
   state['member_index']=0;state['phase']='members'
  elif phase=='members':
   index=state['member_index']
   if index>=len(state['members']):state['phase']='done';save(db,cfg,group,state,'done');return True
-  member=state['members'][index];parts=member['chunks'];chunk_index=member['index']
+  member=state['members'][index];parts=member.get('chunk_keys',member.get('chunks',[]));chunk_index=member['index']
   if len(parts)>1 and chunk_index<len(parts):
-   text=infer(db,cfg,GROUP_MAP,{'scope':'member','target_user_id':member['id'],'group_profile':state['group_profile'],'chunk':chunk_index+1,'chunks':len(parts),'messages':parts[chunk_index]},invoke)
+   text=infer(db,cfg,GROUP_MAP,{'scope':'member','target_user_id':member['id'],'group_profile':state['group_profile'],'chunk':chunk_index+1,'chunks':len(parts),'messages':read_keys(cfg,parts[chunk_index]) if 'chunk_keys' in member else parts[chunk_index]},invoke)
    if text is None:return False
    member['notes'].append(text);member['index']+=1
   else:
    payload={'target_user_id':member['id'],'group_profile':state['group_profile'],'sample_messages':member['count'],'existing_group_member_memory':load_member(cfg,group,member['id'])}
-   payload.update({'all_own_chunk_notes':member['notes']} if len(parts)>1 else {'all_own_messages':parts[0]})
+   payload.update({'all_own_chunk_notes':member['notes']} if len(parts)>1 else {'all_own_messages':read_keys(cfg,parts[0]) if 'chunk_keys' in member else parts[0]})
    text=infer(db,cfg,MEMBER_FINAL,payload,invoke)
    if text is None:return False
    header='## 本群画像 '+group+'\n\n基于该群整体画像及本成员 '+str(member['count'])+' 条记录；'+str(len(parts))+' 个分块均已读取。\n'
-   own_rows=[r for part in parts for r in part]
-   sample_coverage={'message_count':member['count'],'time_start':min(r['time'] for r in own_rows),'time_end':max(r['time'] for r in own_rows),'complete':True,'note':'该成员在取样中的全部分块已读取'}
+   ranges=member.get('range')
+   if not ranges:
+    own_rows=[r for part in parts for r in part];ranges={'first':min(r['time'] for r in own_rows),'last':max(r['time'] for r in own_rows)}
+   sample_coverage={'message_count':member['count'],'time_start':ranges['first'],'time_end':ranges['last'],'complete':True,'note':'该成员在取样中的全部分块已读取'}
    write_portrait(cfg,group,text if isinstance(text,dict) else header+text,member['id'],sample_coverage);state['member_index']+=1
   if state['member_index']>=len(state['members']):state['phase']='done'
  save(db,cfg,group,state,'done' if state['phase']=='done' else 'running')

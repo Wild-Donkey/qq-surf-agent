@@ -1,0 +1,324 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qq-surf-agent.local/schemas/context.schema.json",
+  "$defs": {
+    "Note": {
+      "type": "object",
+      "required": [
+        "text",
+        "evidence_event_keys"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "evidence_event_keys": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Orientation": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "topics",
+        "referents",
+        "open_interactions",
+        "coverage",
+        "updated"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "topics": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/Note"
+          }
+        },
+        "open_interactions": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/Note"
+          }
+        },
+        "referents": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "object",
+            "required": [
+              "expression",
+              "interpretation",
+              "evidence_event_keys",
+              "certainty"
+            ],
+            "properties": {
+              "expression": {
+                "type": "string"
+              },
+              "interpretation": {
+                "type": "string"
+              },
+              "evidence_event_keys": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "certainty": {
+                "enum": [
+                  "confirmed",
+                  "tentative",
+                  "unknown"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "coverage": {
+          "type": "object"
+        },
+        "updated": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Understanding": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "summary",
+        "images",
+        "uncertainties"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 1600
+        },
+        "images": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "object",
+            "required": [
+              "reference",
+              "description"
+            ],
+            "properties": {
+              "reference": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "uncertainties": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "maxLength": 300
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "RecallFact": {
+      "type": "object",
+      "required": [
+        "key",
+        "subject",
+        "text",
+        "evidence",
+        "confidence",
+        "status"
+      ],
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "status": {
+          "enum": [
+            "supported",
+            "tentative"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "RecallBundle": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "facts",
+        "boundaries",
+        "recent_state",
+        "uncertainties",
+        "coverage"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "coverage": {
+          "type": "object"
+        },
+        "facts": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/RecallFact"
+          }
+        },
+        "boundaries": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/RecallFact"
+          }
+        },
+        "recent_state": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/RecallFact"
+          }
+        },
+        "uncertainties": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/RecallFact"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "WorkerContext": {
+      "type": "object",
+      "required": [
+        "context_version",
+        "bot_identity",
+        "group_context",
+        "conversation"
+      ],
+      "properties": {
+        "context_version": {
+          "const": 1
+        },
+        "bot_identity": {
+          "type": "object"
+        },
+        "group_context": {
+          "type": "object"
+        },
+        "conversation": {
+          "type": "object",
+          "required": [
+            "timeline",
+            "reference_evidence",
+            "history_coverage"
+          ],
+          "properties": {
+            "timeline": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "reference_evidence": {
+              "type": "array"
+            },
+            "history_coverage": {
+              "type": "object"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": true
+    },
+    "ProfileMemberPlan": {
+      "type": "object",
+      "required": [
+        "plan_version",
+        "id",
+        "chunk_keys",
+        "notes",
+        "index",
+        "count",
+        "range"
+      ],
+      "properties": {
+        "plan_version": {
+          "const": 1
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "chunk_keys": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "notes": {
+          "type": "array"
+        },
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "range": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "principle": "SQLite documents are authoritative; JSON and Markdown projections are reconstructible. Raw group transcripts are evidence, not per-person profiles.",
+  "entries": [
+    {
+      "path": "structured_memory.sqlite3",
+      "owner": "memory_store.py",
+      "role": "canonical_memory",
+      "schema": "memory.schema.json#/$defs/Group or Person",
+      "rebuildable": false
+    },
+    {
+      "path": "groups/<group_id>/group.json",
+      "owner": "memory_store.py",
+      "role": "projection",
+      "schema": "memory.schema.json#/$defs/Group",
+      "rebuildable": true
+    },
+    {
+      "path": "people/<user_id>/people.json",
+      "owner": "memory_store.py",
+      "role": "projection",
+      "schema": "memory.schema.json#/$defs/Person",
+      "rebuildable": true
+    },
+    {
+      "path": "groups/<group_id>/group.md and people/<user_id>/people.md",
+      "owner": "memory_store.py",
+      "role": "readable_projection_with_manual_section",
+      "schema": "memory.schema.json",
+      "rebuildable": true
+    },
+    {
+      "path": "groups/<group_id>/orientation.json",
+      "owner": "orientation.py",
+      "role": "session_grounding",
+      "schema": "context.schema.json#/$defs/Orientation",
+      "rebuildable": true
+    },
+    {
+      "path": "worker-understandings.sqlite3/windows.body",
+      "owner": "understanding.py",
+      "role": "window_observation",
+      "schema": "context.schema.json#/$defs/Understanding",
+      "rebuildable": false
+    },
+    {
+      "path": "groups/<group_id>/requests/<request_id>.md",
+      "owner": "understanding.py",
+      "role": "observation_projection",
+      "schema": "context.schema.json#/$defs/Understanding",
+      "rebuildable": true
+    },
+    {
+      "path": "archive.sqlite3",
+      "owner": "archive.py",
+      "role": "raw_group_evidence",
+      "schema": "SQL DDL in archive.py",
+      "rebuildable": false
+    },
+    {
+      "path": "identities.sqlite3",
+      "owner": "identities.py",
+      "role": "global_alias_registry",
+      "schema": "SQL DDL in identities.py",
+      "rebuildable": false
+    },
+    {
+      "path": "legacy_memory/structured/",
+      "owner": "memory_store.py",
+      "role": "old_migration_snapshots_read_only",
+      "schema": "historical memory schema",
+      "rebuildable": false
+    },
+    {
+      "path": "maintenance/",
+      "owner": "context_memory.py",
+      "role": "pre_migration_backup",
+      "schema": "SQLite snapshot and original Markdown",
+      "rebuildable": false
+    },
+    {
+      "path": "(worker payload)",
+      "owner": "identities.py and context_memory.py",
+      "role": "transient_view",
+      "schema": "context.schema.json#/$defs/WorkerContext",
+      "rebuildable": true
+    },
+    {
+      "path": "(retrieved memory)",
+      "owner": "context_memory.py",
+      "role": "transient_recall",
+      "schema": "context.schema.json#/$defs/RecallBundle",
+      "rebuildable": true
+    },
+    {
+      "path": "profiling/<group_id>/progress.json members[]",
+      "owner": "profiling.py",
+      "role": "reference_only_profile_progress",
+      "schema": "context.schema.json#/$defs/ProfileMemberPlan",
+      "rebuildable": true
+    }
+  ]
+}

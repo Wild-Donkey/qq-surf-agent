@@ -6,6 +6,9 @@ import archive,emoticons,participants
 from protocol import parse_json
 import memory_store
 TOOLS=[
+ {'name':'ask','description':'主动澄清重要未知，尤其明确请求缺关键信息时，不要wait装作没看到。参数alias、text（一个具体问题）、quality=natural、可选request_ids；应用@当事人并将请求标为等待补充'},
+ {'name':'recall_memory','description':'根据当前疑点主动检索结构化事实、边界、近期状态和待确认事项；参数query，可选alias。无需等人要求你回忆，先查已有记忆再决定是否问当事人'},
+ {'name':'poke','description':'戳本群成员一下，参数alias、quality=natural；应用校验成员、冷却和发信资格，经持久队列发送，不连戳'},
  {'name':'retrace_context','description':'不懂指代/话题来历时回溯本群原话，参数query（可空）；应用进入预读阶段，读完再set_group_context确认背景，不先猜着回复'},
  {'name':'set_group_context','description':'完成群会话预读，参数topics:[{text,evidence_event_keys}],referents:[{expression,interpretation,evidence_event_keys,certainty:confirmed/tentative/unknown}],open_interactions:[{text,evidence_event_keys}]；只写有原话依据的指代与局面'},
  {'name':'record_understanding','description':'保存本轮局面理解（内部字段），参数understanding:{summary,images:[{reference,description,is_sticker,tags}],uncertainties}；写context与日志，之后再决定公开回复'},
@@ -27,12 +30,14 @@ TOOLS=[
  {'name':'merged_forward','description':'合并转发一段节目：bundle_id、message_ids、quality=natural；搬本群节目到其他活跃群时再带 outgoing_moments.destination.route_id，省略route_id则搬入当前群'},
  {'name':'forward','description':'转发当前群中某条消息（原生转发卡片），参数 message_id（取自 recent_target_messages）'},
  {'name':'wait','description':'保持安静，参数 reason'}]
-ARGUMENTS={'retrace_context':{'query'},'set_group_context':{'topics','referents','open_interactions'},'record_understanding':{'understanding'},'web_search':{'query'},'read_webpage':{'url'},'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id','alias'},'set_member_alias':{'alias','name','evidence_event_key'},'search_history':{'query'},'list_emoticons':set(),'search_emoticons':{'query','include_unreviewed'},'view_emoticon':{'id'},'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'share_image':{'image_id','route_id','quality'},'merged_forward':{'bundle_id','message_ids','quality','route_id'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id','bundle_id','message_ids','route_id','image_id','image_share'}}
+ARGUMENTS={'ask':{'alias','text','quality','request_ids','understanding'},'recall_memory':{'query','alias'},'poke':{'alias','quality'},'retrace_context':{'query'},'set_group_context':{'topics','referents','open_interactions'},'record_understanding':{'understanding'},'web_search':{'query'},'read_webpage':{'url'},'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id','alias'},'set_member_alias':{'alias','name','evidence_event_key'},'search_history':{'query'},'list_emoticons':set(),'search_emoticons':{'query','include_unreviewed'},'view_emoticon':{'id'},'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'share_image':{'image_id','route_id','quality'},'merged_forward':{'bundle_id','message_ids','quality','route_id'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id','bundle_id','message_ids','route_id','image_id','image_share'}}
 for _terminal in ('finish_turn','reply','share','forward','merged_forward','share_image'):
  ARGUMENTS[_terminal].update({'request_ids','request_outcome'})
+ARGUMENTS['finish_turn'].add('alias')
+ARGUMENTS['poke'].add('understanding')
 ARGUMENTS['reply'].add('reply_parts');ARGUMENTS['finish_turn'].add('reply_parts')
 for _terminal in ('finish_turn','reply','wait','share','forward','merged_forward','share_image'):ARGUMENTS[_terminal].add('understanding')
-READS={'retrace_context','set_group_context','record_understanding','web_search','read_webpage','get_memory_schema','update_states','read_context','get_member','set_member_alias','search_history','list_emoticons','search_emoticons','view_emoticon'}
+READS={'recall_memory','retrace_context','set_group_context','record_understanding','web_search','read_webpage','get_memory_schema','update_states','read_context','get_member','set_member_alias','search_history','list_emoticons','search_emoticons','view_emoticon'}
 def decode(raw):
  value=parse_json(raw,'worker_api')
  # Bounded normalization; never let outer fields override explicit arguments.
@@ -43,7 +48,7 @@ def decode(raw):
    value=parse_json(value['content'],'worker_api');continue
   if 'call' not in value:
    if 'action' in value:value={'call':{'name':'finish_turn','arguments':value}}
-   elif value.get('type') in ('wait','reply','share','forward','merged_forward','share_image'):
+   elif value.get('type') in ('wait','reply','ask','poke','share','forward','merged_forward','share_image'):
     value={'call':{'name':'finish_turn','arguments':{'action':value['type'],**{k:v for k,v in value.items() if k!='type'}}}}
   if isinstance(value.get('call'),dict) and isinstance(value['call'].get('arguments'),dict):
    args=dict(value['call']['arguments']);extra={k:v for k,v in value.items() if k!='call'}
@@ -71,14 +76,16 @@ def decision(call):
 def _decision(call):
  name=call['name'];args=call['arguments']
  quality=args.get('quality')
- if (name in ('reply','share','merged_forward','share_image') or name=='finish_turn' and args.get('action') in ('reply','share','merged_forward','share_image')) and quality!='natural':
+ if (name in ('reply','ask','poke','share','merged_forward','share_image') or name=='finish_turn' and args.get('action') in ('reply','ask','poke','share','merged_forward','share_image')) and quality!='natural':
   result={'action':'wait','text':'','reason':'回复难接、尴尬或尚未确认自然，跳过本轮'}
   if name=='finish_turn':result['state_updates']={k:args[k] for k in ('group_state','members','images') if k in args}
   return result
  if name=='finish_turn':
-  if args.get('action') not in ('wait','reply','share','forward','merged_forward','share_image'):raise ValueError('invalid_finish_action')
+  if args.get('action') not in ('wait','reply','ask','poke','share','forward','merged_forward','share_image'):raise ValueError('invalid_finish_action')
   if not isinstance(args.get('text',''),str):raise ValueError('invalid_text')
-  return {'action':args['action'],'text':args.get('text','')[:1200],'reply_parts':args.get('reply_parts'),'image_share':args.get('image_share'),'image_id':args.get('image_id'),'request_ids':args.get('request_ids',[]),'request_outcome':args.get('request_outcome'),'route_id':args.get('route_id'),'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'message_id':str(args.get('message_id','')) if args.get('message_id') else None,'reason':str(args.get('reason',''))[:200],'state_updates':{k:args[k] for k in ('group_state','members','images') if k in args}}
+  return {'action':args['action'],'alias':args.get('alias'),'text':args.get('text','')[:1200],'reply_parts':args.get('reply_parts'),'image_share':args.get('image_share'),'image_id':args.get('image_id'),'request_ids':args.get('request_ids',[]),'request_outcome':args.get('request_outcome'),'route_id':args.get('route_id'),'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'message_id':str(args.get('message_id','')) if args.get('message_id') else None,'reason':str(args.get('reason',''))[:200],'state_updates':{k:args[k] for k in ('group_state','members','images') if k in args}}
+ if name=='ask':return {'action':'ask','alias':args.get('alias'),'text':args.get('text',''),'request_ids':args.get('request_ids',[])}
+ if name=='poke':return {'action':'poke','alias':str(args.get('alias','')),'text':''}
  if name in READS:return {'action':'read','call':call,'text':''}
  if name=='forward':
   mid=str(args.get('message_id',''))
@@ -87,11 +94,16 @@ def _decision(call):
  return {'action':name,'text':args.get('text','')[:1200],'reply_parts':args.get('reply_parts'),'image_share':args.get('image_share'),'image_id':args.get('image_id'),'request_ids':args.get('request_ids',[]),'request_outcome':args.get('request_outcome'),'route_id':args.get('route_id'),'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'reason':str(args.get('reason',''))[:200]}
 def read(db,cfg,target,payload,call):
  name=call['name'];args=call['arguments']
+ if name=='recall_memory':
+  import context_memory
+  query=args.get('query','')
+  if not isinstance(query,str) or len(query)>300:raise ValueError('invalid_memory_query')
+  return context_memory.retrieve(cfg,target,payload,query,args.get('alias'))
  if name=='retrace_context':
   import orientation
   query=args.get('query','')
   if not isinstance(query,str) or len(query)>300:raise ValueError('invalid_retrace_query')
-  transcript=orientation.prepare(cfg,target,time.time(),payload.get('recent_target_messages',[]))
+  transcript=orientation.prepare(cfg,target,time.time(),payload.get('recent_target_messages',[])+payload.get('unread_messages',[]))
   if query:
    disk=archive.Archive(cfg['context_dir'])
    try:hits=disk.search(target,query,limit=16)
@@ -104,7 +116,7 @@ def read(db,cfg,target,payload,call):
   if db is not None:
    users={str(v['id']) for v in payload.get('member_profiles',[])}
    users.update(str(v.get('speaker',v.get('user_id',''))) for v in transcript['messages'] if str(v.get('speaker',v.get('user_id',''))).isdigit())
-   payload['member_profiles']=participants.evidence(db,[{'user_id':user} for user in users])
+   payload['member_profiles']=participants.evidence(db,[{'user_id':user} for user in users],include_samples=False)
   return {'prepared':True,'coverage':transcript['coverage'],'instruction':'本群原话已放入orientation_history，请预读后set_group_context，不要先公开回复'}
  if name=='set_group_context':
   import orientation
@@ -211,6 +223,12 @@ def member_markdown(cfg,group,user):
 
 
 def group_portrait(cfg,group):
+    if memory_store.enabled(cfg['context_dir']):
+        store=memory_store.MemoryStore(cfg['context_dir'])
+        try:
+            doc=store.load('group',group);portrait=doc['portrait']
+            return {'summary':portrait['summary'][:800],**{k:[v for v in portrait.get(k,[]) if v.get('status')=='supported' and v.get('evidence')][:8] for k in ('communication','rules','boundaries')},'coverage':doc['coverage'],'revision':doc['revision']}
+        finally:store.close()
     path=Path(cfg['context_dir'])/'groups'/safe_id(group)/'group.md'
     if not path.exists():return ''
     match=re.search(r'<!-- portrait:start -->.*?<!-- portrait:end -->',path.read_text(),flags=re.S)

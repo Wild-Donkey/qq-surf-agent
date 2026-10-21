@@ -5,14 +5,15 @@ from memory import atomic_write
 SCHEMA=json.loads((Path(__file__).resolve().parent/'schemas/memory.schema.json').read_text())
 
 
-def validate(value,schema,path='$'):
- if '$ref' in schema:return validate(value,SCHEMA['$defs'][schema['$ref'].split('/')[-1]],path)
+def validate(value,schema,path='$',root_schema=None):
+ root_schema=SCHEMA if root_schema is None else root_schema
+ if '$ref' in schema:return validate(value,root_schema['$defs'][schema['$ref'].split('/')[-1]],path,root_schema)
  if 'const' in schema and (value!=schema['const'] or type(value)!=type(schema['const'])):raise ValueError(path+': wrong constant')
  if 'enum' in schema and value not in schema['enum']:raise ValueError(path+': invalid enum')
  if 'oneOf' in schema:
   matches=0
   for option in schema['oneOf']:
-   try:validate(value,option,path);matches+=1
+   try:validate(value,option,path,root_schema);matches+=1
    except ValueError:pass
   if matches!=1:raise ValueError(path+': expected exactly one schema')
   return
@@ -24,14 +25,14 @@ def validate(value,schema,path='$'):
   if missing:raise ValueError(path+': missing '+','.join(sorted(missing)))
   props=schema.get('properties',{});patterns=schema.get('patternProperties',{})
   for key,item in value.items():
-   if key in props:validate(item,props[key],path+'.'+key)
+   if key in props:validate(item,props[key],path+'.'+key,root_schema)
    else:
     matched=[definition for pattern,definition in patterns.items() if re.fullmatch(pattern,key)]
     if not matched and schema.get('additionalProperties') is False:raise ValueError(path+': unknown field '+key)
-    for definition in matched:validate(item,definition,path+'.'+key)
+    for definition in matched:validate(item,definition,path+'.'+key,root_schema)
  if isinstance(value,list):
   if len(value)>schema.get('maxItems',10**9):raise ValueError(path+': too many items')
-  for index,item in enumerate(value):validate(item,schema.get('items',{}),path+'['+str(index)+']')
+  for index,item in enumerate(value):validate(item,schema.get('items',{}),path+'['+str(index)+']',root_schema)
  if isinstance(value,str):
   if len(value)>schema.get('maxLength',10**9):raise ValueError(path+': too long')
   if schema.get('pattern') and not re.fullmatch(schema['pattern'],value):raise ValueError(path+': invalid identifier')
@@ -214,12 +215,16 @@ class MemoryStore:
 def plain(value):return re.sub(r'\s+',' ',str(value)).replace('<!--','&lt;!--').replace('-->','--&gt;').strip()
 def coverage_text(value):return '记录 '+str(value['message_count'])+' 条；取样内读取完成：'+('是' if value['complete'] else '未核验')+'。'+plain(value['note'])+'\n\n时间范围：'+str(value['time_start'])+' — '+str(value['time_end'])
 def fact_lines(values):
- result=[]
+ confirmed=[];uncertain=[]
  for value in values:
   text=value.get('text') or (value['subject_id']+' → '+value['object_id']+'：'+value['relation'])
   evidence='、'.join(value['evidence']) or '尚无可核验原话'
-  result.append('- '+plain(text)+'\n  - 证据：'+evidence+'；置信度 '+str(value['confidence'])+'；'+value['status'])
- return '\n'.join(result) if result else '- 未知 / 尚无记录。'
+  line='- '+plain(text)+'\n  - 证据：'+evidence+'；置信度 '+str(value['confidence'])+'；'+value['status']
+  (confirmed if value['status']=='supported' and value['confidence']>=.85 and value['evidence'] else uncertain).append(line)
+ result=[]
+ if confirmed:result.append('已核实：\n'+'\n'.join(confirmed))
+ if uncertain:result.append('待核实（不是已知事实）：\n'+'\n'.join(uncertain))
+ return '\n\n'.join(result) if result else '- 未知 / 尚无记录。'
 def render_fields(portrait,kind):
  names={'summary':'概况','topics':'长期话题','communication':'交流方式','rules':'明确群规','aliases':'称呼','style':'表达方式','interests':'反复出现的话题与偏好','relationships':'互动关系','boundaries':'意愿与边界','uncertainties':'待确认与冲突'}
  return '\n\n'.join('### '+names[key]+'\n\n'+(plain(value) if isinstance(value,str) else fact_lines(value)) for key,value in portrait.items())

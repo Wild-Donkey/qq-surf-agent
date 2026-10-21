@@ -20,7 +20,9 @@ class OrientationTests(unittest.TestCase):
    self.assertEqual(payload['group_context']['orientation'],saved['orientation'])
    self.assertTrue((Path(root)/'groups/1/orientation.json').exists())
    payload.update(orientation_required=True,orientation_history=history);args['referents'][0]['evidence_event_keys']=['2:3']
-   with self.assertRaises(ValueError):orientation.save(cfg,'1',payload,args)
+   saved=orientation.save(cfg,'1',payload,args)
+   self.assertEqual(saved['orientation']['referents'][0]['evidence_event_keys'],[])
+   self.assertEqual(saved['orientation']['referents'][0]['certainty'],'tentative')
  def test_request_retrace_prepares_history_instead_of_replying(self):
   with tempfile.TemporaryDirectory() as root:
    cfg={'context_dir':root};payload={'recent_target_messages':[{'event_key':'1:1','speaker':'7','text':'那台机器'}]}

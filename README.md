@@ -203,3 +203,5 @@ python3 qq.py resume "群名关键词"
 终端界面：双击 `Surf Console.command`，同时看 QQ Helper 与 surf bot 日志、抢话接管和投递 worker prompt。操作说明见 [CONSOLE.md](CONSOLE.md)。
 
 简化终端可使用 `python3 console.py --lite` 或双击 `Surf Lite.command`：普通逐行聊天，无强制颜色、无右侧bot日志。
+
+上下文分层、文件职责、schema 与回溯/澄清流程见 [docs/CONTEXT.md](docs/CONTEXT.md)。

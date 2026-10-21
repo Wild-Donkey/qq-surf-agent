@@ -3,6 +3,7 @@ import json,re,time
 
 def ensure_schema(db):
  db.execute('''CREATE TABLE IF NOT EXISTS user_requests(event_key TEXT PRIMARY KEY,group_id TEXT,user_id TEXT,text TEXT,kind TEXT,target_group TEXT,status TEXT,created REAL,next_attempt REAL,delivery_id INTEGER,outcome TEXT,context_snapshot TEXT)''')
+ db.execute('CREATE TABLE IF NOT EXISTS request_answers(request_key TEXT PRIMARY KEY,event_key TEXT,text TEXT,created REAL)')
  if 'context_snapshot' not in {r[1] for r in db.execute('PRAGMA table_info(user_requests)')}:db.execute('ALTER TABLE user_requests ADD COLUMN context_snapshot TEXT')
 
 def observe(db,event,cfg,text,now):
@@ -11,12 +12,16 @@ def observe(db,event,cfg,text,now):
  if user==str(cfg.get('bot_id','')) or profile and profile[0]=='bot':return
  parts=event.get('message') if isinstance(event.get('message'),list) else [];addressed=any(p.get('type')=='at' and str(p.get('data',{}).get('qq'))==str(cfg.get('bot_id','')) for p in parts if isinstance(p,dict))
  addressed=addressed or text.strip().lower().startswith(('bot','luna')) or bool(re.search(r'你是谁|你有什么功能|你能做什么',text))
- if re.search(r'不用转|别转了|取消(?:转发|请求)|不要转了',text):
-  ids=[r[0] for r in db.execute("SELECT delivery_id FROM user_requests WHERE group_id=? AND user_id=? AND status IN ('pending','queued')",(group,user)) if r[0] is not None]
-  db.execute("UPDATE user_requests SET status='cancelled' WHERE group_id=? AND user_id=? AND status IN ('pending','queued')",(group,user))
+ if re.search(r'不用转|别转了|取消(?:转发|请求)|不要转了|不用问了|别问了',text):
+  ids=[r[0] for r in db.execute("SELECT delivery_id FROM user_requests WHERE group_id=? AND user_id=? AND status IN ('pending','queued','waiting_info')",(group,user)) if r[0] is not None]
+  db.execute("UPDATE user_requests SET status='cancelled' WHERE group_id=? AND user_id=? AND status IN ('pending','queued','waiting_info')",(group,user))
   for delivery in ids:db.execute("UPDATE deliveries SET status='cancelled' WHERE id=? AND status='approved'",(delivery,))
   return
  forward=bool(re.search(r'合并转发|转发.{0,20}(?:到|给)|搬到|搬去',text))
+ waiting=db.execute("SELECT event_key FROM user_requests r WHERE group_id=? AND user_id=? AND (status='waiting_info' OR (status='queued' AND outcome='needs_info' AND EXISTS(SELECT 1 FROM deliveries d WHERE d.id=r.delivery_id AND d.status='sent')))",(group,user)).fetchall()
+ for pending in waiting:
+  db.execute("UPDATE user_requests SET status='pending',next_attempt=? WHERE event_key=?",(now,pending['event_key']))
+  db.execute("INSERT OR REPLACE INTO request_answers VALUES (?,?,?,?)",(pending['event_key'],key,text[:2000],now))
  if not addressed and not forward:return
  target=None
  match=re.search(r'(?:搬到|搬去|转发到)(.{1,30}?)(?:给|让|看看|吧|[，。\n]|$)',text)
@@ -30,6 +35,8 @@ def observe(db,event,cfg,text,now):
 def pending(db,group):
  rows=[dict(r) for r in db.execute("SELECT event_key,user_id,text,kind,target_group,created,context_snapshot FROM user_requests WHERE group_id=? AND status='pending' ORDER BY created LIMIT 8",(str(group),))]
  for index,row in enumerate(rows):
+  answer=db.execute('SELECT event_key,text FROM request_answers WHERE request_key=?',(row['event_key'],)).fetchone()
+  if answer:row['possible_clarification_answer']=dict(answer)
   snapshot=json.loads(row.pop('context_snapshot') or '[]')
   row['original_context']=[{**r,'text':r['text'][:350]} for r in snapshot] if index==0 else []
  return rows
@@ -40,8 +47,8 @@ def sync(db,cfg,now=None):
  import moderation
  now=time.time() if now is None else now
  with db:
-  for row in db.execute("SELECT r.event_key,d.status FROM user_requests r JOIN deliveries d ON d.id=r.delivery_id WHERE r.status='queued'").fetchall():
-   state={'sent':'done','already_seen':'done','uncertain':'uncertain','failed':'failed','cancelled':'cancelled','superseded':'pending','expired':'pending','blocked_muted':'pending'}.get(row['status'])
+  for row in db.execute("SELECT r.event_key,r.outcome,d.status FROM user_requests r JOIN deliveries d ON d.id=r.delivery_id WHERE r.status='queued'").fetchall():
+   state={'sent':'waiting_info' if row['outcome']=='needs_info' else 'done','already_seen':'done','uncertain':'uncertain','failed':'failed','cancelled':'cancelled','superseded':'pending','expired':'pending','blocked_muted':'pending'}.get(row['status'])
    if state:db.execute('UPDATE user_requests SET status=?,next_attempt=? WHERE event_key=?',(state,now+5,row['event_key']))
   for row in db.execute("SELECT event_key,group_id FROM user_requests WHERE status='pending' AND next_attempt<=?",(now,)).fetchall():
    if moderation.is_muted(db,row['group_id'],now):continue
