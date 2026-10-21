@@ -83,8 +83,10 @@ class Controller:
    if command=='/jobs':return '\n'.join(str(dict(r)) for r in db.execute('SELECT id,group_id,status,error FROM operator_prompts ORDER BY created DESC LIMIT 10')) or '暂无worker prompt'
    if command=='/status':
     metrics=dict(db.execute("SELECT key,value FROM metrics WHERE key IN ('last_tick','model_state','last_event')"))
+    import memory_maintenance
+    memory_status=memory_maintenance.status(cfg)
     pause=db.execute('SELECT until_time FROM operator_pause WHERE group_id=?',(self.group,)).fetchone()
-    return json.dumps({'group':self.group,'paused_seconds':max(0,int(pause[0]-time.time())) if pause else 0,'helper_managed_pid':alive(ROOT/'runtime/qq-helper-service.pid'),'metrics':metrics,'jobs':[dict(r) for r in db.execute("SELECT status,count(*) n FROM social_jobs WHERE status IN ('pending','processing') GROUP BY status")]},ensure_ascii=False,indent=2)
+    return json.dumps({'group':self.group,'memory':memory_status,'paused_seconds':max(0,int(pause[0]-time.time())) if pause else 0,'helper_managed_pid':alive(ROOT/'runtime/qq-helper-service.pid'),'metrics':metrics,'jobs':[dict(r) for r in db.execute("SELECT status,count(*) n FROM social_jobs WHERE status IN ('pending','processing') GROUP BY status")]},ensure_ascii=False,indent=2)
    if command=='/helper':return helper(cfg,api,body or 'status')
    if command=='/bot':
     work=ROOT/'runtime'

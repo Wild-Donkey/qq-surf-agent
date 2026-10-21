@@ -12,3 +12,11 @@ class EmptyOutputTests(unittest.TestCase):
   with patch('social.api_key',return_value='fake'),patch('vision.prepare',return_value=({'vision_status':{'attached':[],'unavailable':[]}},[])),patch('agent.request',return_value=json.dumps(response)):
    with self.assertRaises(ProtocolError) as caught:social.generate_text(model,'JSON',{})
   self.assertEqual(caught.exception.code,'model_empty_output');self.assertEqual(caught.exception.details['finish_reason'],'length')
+
+ def test_content_filter_is_distinct_from_json_or_empty_output(self):
+  model={'enabled':True,'provider':'compatible','model':'test','base_url':'http://localhost'}
+  for content in ('','{"partial":true}'):
+   response={'choices':[{'message':{'content':content},'finish_reason':'content_filter'}]}
+   with patch('social.api_key',return_value='fake'),patch('vision.prepare',return_value=({'vision_status':{'attached':[],'unavailable':[]}},[])),patch('agent.request',return_value=json.dumps(response)):
+    with self.assertRaises(ProtocolError) as caught:social.generate_text(model,'JSON',{})
+   self.assertEqual(caught.exception.code,'model_content_filtered')

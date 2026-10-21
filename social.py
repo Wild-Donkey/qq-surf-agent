@@ -162,6 +162,8 @@ def generate_text(model,instructions,payload):
     choice=response['choices'][0]
     raw=choice['message'].get('content')
     usage=response.get('usage',{});usage['_vision_status']=private_vision_status
+    if choice.get('finish_reason')=='content_filter' or choice['message'].get('refusal'):
+        raise ProtocolError('model_response','model_content_filtered',{'finish_reason':'content_filter','completion_tokens':usage.get('completion_tokens',0)})
     if not isinstance(raw,str) or not raw.strip():
         raise ProtocolError('model_response','model_empty_output',{'finish_reason':str(choice.get('finish_reason','unknown'))[:40],'completion_tokens':usage.get('completion_tokens',0)})
     return raw,usage
@@ -332,6 +334,18 @@ def apply_decision(db,job,decision,candidates,cfg,now):
         db.execute('UPDATE deliveries SET context_watermark=?,deadline_reply=? WHERE candidate_id=? AND target_group=?',(now,int(bool(decision.get('_deadline_reply'))),cid,target))
 
     return db.execute('SELECT id FROM deliveries WHERE candidate_id=? AND target_group=?',(cid,target)).fetchone()[0]
+
+def block_filtered_batch(db,job,batch,call_id,now):
+    with db:
+        for item in batch:
+            db.execute("UPDATE social_jobs SET status='content_filtered',error='model_content_filtered' WHERE event_key=? AND target_group=?",(item['event_key'],item['target_group']))
+            db.execute("UPDATE user_requests SET status='blocked',outcome='provider_content_filter' WHERE event_key=? AND status='pending'",(item['event_key'],))
+        db.execute("UPDATE model_calls SET status='failed',error='model_content_filtered' WHERE id=?",(call_id,))
+        db.execute('DELETE FROM reaction_windows WHERE group_id=?',(job['target_group'],))
+        db.execute('DELETE FROM metrics WHERE key=?',('model_retry_after',))
+        db.execute('INSERT OR REPLACE INTO metrics VALUES (?,?)',('model_state','ready'))
+    service_log.event('surf-bot','worker blocked group='+str(job['target_group'])+' code=model_content_filtered; archived batch retained; no automatic retry')
+    alerts.record(db,'model_content_filtered','服务商拒绝处理一批聊天内容；记录已保留，停止重复调用，其他消息继续处理。',scope=job['target_group'],now=now,details={'group_id':job['target_group'],'stage':'chat_turn','retryable':False,'blocked_messages':len(batch)})
 
 def tick(db,cfg,sessions=None):
     interaction=cfg.get('interaction',{})
@@ -508,6 +522,9 @@ def tick(db,cfg,sessions=None):
                 db.execute('INSERT OR REPLACE INTO metrics VALUES (?,?)',('model_state','ready'))
         except Exception as exc:
             error=exc.code if isinstance(exc,ProtocolError) else type(exc).__name__
+            if error=='model_content_filtered':
+                block_filtered_batch(db,job,batch,call_id,time.time())
+                return
             err_msg=str(exc)[:200]
             pause=5 if isinstance(exc,ProtocolError) else 60
             if isinstance(exc,urllib.error.HTTPError):

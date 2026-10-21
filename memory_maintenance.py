@@ -10,7 +10,7 @@ def connect(cfg):
  root=Path(cfg['context_dir']);root.mkdir(parents=True,exist_ok=True)
  db=sqlite3.connect(root/'memory-maintenance.sqlite3',timeout=20);db.row_factory=sqlite3.Row
  db.execute('PRAGMA journal_mode=WAL')
- db.executescript('''CREATE TABLE IF NOT EXISTS jobs(group_id TEXT PRIMARY KEY,watermark INTEGER DEFAULT 0,target INTEGER DEFAULT 0,reasons TEXT DEFAULT '[]',updated REAL DEFAULT 0,next_attempt REAL DEFAULT 0,error TEXT DEFAULT '');''')
+ db.executescript('''CREATE TABLE IF NOT EXISTS blocked_ranges(group_id TEXT,start_id INTEGER,end_id INTEGER,reason TEXT,created REAL,PRIMARY KEY(group_id,start_id,end_id));CREATE TABLE IF NOT EXISTS jobs(group_id TEXT PRIMARY KEY,watermark INTEGER DEFAULT 0,target INTEGER DEFAULT 0,reasons TEXT DEFAULT '[]',updated REAL DEFAULT 0,next_attempt REAL DEFAULT 0,error TEXT DEFAULT '');''')
  return db
 
 def enqueue(cfg,group,reason,now=None):
@@ -29,6 +29,12 @@ def enqueue(cfg,group,reason,now=None):
   if row:db.execute('UPDATE jobs SET target=max(target,?),reasons=?,updated=? WHERE group_id=?',(target,json.dumps(sorted(reasons)),now,group))
   elif target:db.execute('INSERT INTO jobs(group_id,target,reasons,updated) VALUES (?,?,?,?)',(group,target,json.dumps(sorted(reasons)),now))
   db.commit();return bool(target)
+ finally:db.close()
+
+def status(cfg):
+ if not (Path(cfg['context_dir'])/'memory-maintenance.sqlite3').exists():return {'pending_groups':0,'blocked_ranges':0}
+ db=connect(cfg)
+ try:return {'pending_groups':db.execute('SELECT count(*) FROM jobs WHERE target>watermark').fetchone()[0],'blocked_ranges':db.execute('SELECT count(*) FROM blocked_ranges').fetchone()[0],'errors':[dict(r) for r in db.execute("SELECT group_id,error FROM jobs WHERE error!=''")]}
  finally:db.close()
 
 def schedule(cfg,now=None):
@@ -140,6 +146,14 @@ def tick(db,cfg,invoke=None,now=None):
   with queue:queue.execute("UPDATE jobs SET watermark=?,reasons=CASE WHEN target<=? THEN '[]' ELSE reasons END,error='',next_attempt=0 WHERE group_id=?",(cutoff,cutoff,job['group_id']))
   return True
  except Exception as exc:
+  if 'job' in locals() and job and getattr(exc,'code','')=='model_content_filtered':
+   # This is explicitly NOT a successful distillation. Retain the gap separately
+   # and continue subsequent records instead of replaying a provider refusal.
+   with queue:
+    queue.execute('INSERT OR IGNORE INTO blocked_ranges VALUES (?,?,?,?,?)',(job['group_id'],job['watermark'],cutoff,'provider_content_filter',time.time()))
+    queue.execute("UPDATE jobs SET watermark=?,error='',next_attempt=0 WHERE group_id=?",(cutoff,job['group_id']))
+   exc.details.update(group_id=job['group_id'],stage='incremental_memory',retryable=False,start_id=job['watermark'],end_id=cutoff)
+   raise
   if 'job' in locals() and job:
    detail=str(exc)
    code=type(exc).__name__+(':'+detail[:160] if re.fullmatch(r'[A-Za-z0-9_.$:, \[\]-]{1,200}',detail) else '')

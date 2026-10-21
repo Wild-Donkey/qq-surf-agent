@@ -115,6 +115,12 @@ def tick(db,cfg,api,now=None):
   with db:
    for mid in ids:db.execute("UPDATE private_messages SET status='read' WHERE user_id=? AND message_id=?",(uid,mid))
  except Exception as exc:
+  if getattr(exc,'code','')=='model_content_filtered':
+   with db:
+    db.execute("UPDATE model_calls SET status='failed',error='model_content_filtered' WHERE id=? AND status='reserved'",(slot,))
+    for mid in ids:db.execute("UPDATE private_messages SET status='content_filtered' WHERE user_id=? AND message_id=?",(uid,mid))
+   alerts.record(db,'model_content_filtered','服务商拒绝处理一批私信内容；已保留记录，不会重复调用。',scope='private:'+uid,details={'stage':'private_turn','retryable':False})
+   return
   uncertain=db.execute('SELECT 1 FROM private_deliveries WHERE user_id=? AND trigger_id=?',(uid,last)).fetchone()
   with db:
    db.execute("UPDATE model_calls SET status='failed',error=? WHERE id=? AND status='reserved'",(type(exc).__name__,slot))

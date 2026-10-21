@@ -77,6 +77,16 @@ class MaintenanceTests(unittest.TestCase):
   model,_,payload=infer.call_args.args
   self.assertEqual(model['reasoning_effort'],'none')
   self.assertNotIn('Person',payload['schema'])
+ def test_provider_refusal_records_gap_without_repeating_same_batch(self):
+  from protocol import ProtocolError
+  self.record('a')
+  with patch('social.load_model',return_value={}),patch('model_gate.reserve',return_value=1),patch('social.generate_text',side_effect=ProtocolError('model_response','model_content_filtered')):
+   with self.assertRaises(ProtocolError):mm.tick(self.db,self.cfg)
+  self.assertEqual(mm.status(self.cfg)['blocked_ranges'],1)
+  self.assertEqual(mm.status(self.cfg)['pending_groups'],0)
+  self.assertFalse(mm.tick(self.db,self.cfg,invoke=lambda p:self.fail('same refused batch retried')))
+  self.record('b');mm.enqueue(self.cfg,1,'periodic')
+  self.assertTrue(mm.tick(self.db,self.cfg,invoke=lambda p:{}))
  def test_atomic_bundle_rejects_wrong_evidence(self):
   self.record('a');store=memory_store.MemoryStore(self.tmp.name)
   try:

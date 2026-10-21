@@ -47,8 +47,10 @@ def main():
      group=details.get('group_id',group)
      if stage=='history_profile' and active:
       with db:db.execute('UPDATE profile_jobs SET error=? WHERE group_id=?',(type(exc).__name__,group))
-     alerts.record(db,'profile_'+type(exc).__name__,'画像建档暂缓，正在自动排障。',scope=stage+':'+group,details=details)
-     print(stage+' 暂缓：'+type(exc).__name__,flush=True)
+     code=getattr(exc,'code',type(exc).__name__)
+     filtered=code=='model_content_filtered'
+     alerts.record(db,'profile_content_filtered' if filtered else 'profile_'+type(exc).__name__,'服务商拒绝处理部分记忆样本；已记录缺口并停止重复调用，其余样本继续整理。' if filtered else '画像建档暂缓，正在自动排障。',scope=stage+':'+group,details=details)
+     print(stage+' group='+group+' code='+code+' retryable='+str(not filtered)+' details='+json.dumps(details,ensure_ascii=False),flush=True)
    stop.wait(30 if failed else 1)
  finally:
   (ROOT/'runtime/profile-worker.pid').unlink(missing_ok=True);db.close();lock.close()

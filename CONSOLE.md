@@ -89,3 +89,6 @@ macOS 旧版 curses 缺少第5按钮常量时，控制台直接解析 SGR 鼠标
 群聊和好友私信 worker 可调用 `web_search(query)`、`read_webpage(url)` 搜索并读取公开网页，每轮最多三次读取；返回真实来源链接、读取时间和错误信息。无需另配搜索 API key。只使用公开 GET 请求，限制响应大小及重定向，每跳校验并固定公网 IP，不带 QQ 或浏览器登录态。网页数据不作为系统指令，搜索词不得包含群历史或人物记忆。可通过 `internet.enabled=false` 关闭。
 
 Lite 和标准界面 `/use` 的 Tab 补全均优先填入群名；重名群使用 `群名 [群号]` 区分，仍可输入群号筛选。所选聊天跨重启保留。
+
+
+服务商以 `content_filter` 拒绝的聊天批次标记为 `content_filtered`，相关待办标为 `blocked`；记忆批次在 `memory-maintenance.sqlite3/blocked_ranges` 中记录未完成的语义整理区间。原始归档保留，不把拒绝当作成功摘要，也不自动反复重发同一批内容。`/status` 的 `memory.blocked_ranges` 显示缺口数量。其他新增样本继续处理。此类拒绝不拉起代码排障；真正的格式、网络或校验错误仍保留重试和排障链路。
