@@ -60,7 +60,7 @@ class OnboardingTests(unittest.TestCase):
 
     def test_first_greeting_without_history_or_human_presence(self):
         with self.db:self.db.execute("INSERT INTO group_onboarding(group_id,created,status,new_group) VALUES ('1',?,'done',1)",(self.now,))
-        self.cfg.update(mode='live',refresh_before_send=False,max_per_tick=1)
+        self.cfg.update(mode='live',refresh_before_send=False,max_per_tick=1,human_presence={'enabled':True})
         with patch('social.load_model',return_value={'enabled':False,'model':'configured-model'}):onboarding.greet(self.db,self.cfg,self.now)
         def api(cfg,action,payload=None):
             return {'get_login_info':{'user_id':99},'get_group_list':[{'group_id':1}], 'get_group_member_list':[{'user_id':99,'shut_up_timestamp':0}], 'send_group_msg':{'message_id':55}}[action]

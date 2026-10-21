@@ -385,7 +385,7 @@ def dispatch(db, cfg, api_cfg, now=None):
             if job['kind'] not in ('moment_forward','image_share') and not social.request_queue.is_bound(db,job['id']) and not job['deadline_reply'] and newer_context(db,target,job['context_watermark']):
                 with db:db.execute("UPDATE deliveries SET status='superseded',updated=? WHERE id=?",(time.time(),job['id']))
                 continue
-            if not participants.humans_recent(db,target,cfg):
+            if not intro and not participants.humans_recent(db,target,cfg):
                 with db:db.execute("UPDATE deliveries SET status='approved' WHERE id=?",(job['id'],))
                 continue
             if job['kind']=='image_share':
