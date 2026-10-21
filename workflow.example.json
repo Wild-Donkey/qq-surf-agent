@@ -80,5 +80,8 @@
   "merged_forward": {
     "enabled": true,
     "cooldown_seconds": 60
+  },
+  "memory_updates": {
+    "interval_seconds": 300
   }
 }

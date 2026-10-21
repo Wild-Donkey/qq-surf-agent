@@ -44,7 +44,7 @@ def start_diagnostic():
 def start_profile():
     global profile_child,profile_started
     cfg=json.loads(args.config.read_text())
-    if not cfg.get('profiling',{}).get('enabled'):return
+    if not (cfg.get('profiling',{}).get('enabled') or cfg.get('memory_schema',{}).get('enabled')):return
     log=(WORK/'profiling.log').open('ab',buffering=0)
     try:profile_child=subprocess.Popen([sys.executable,'-u',str(ROOT/'profile_service.py'),'--config',str(args.config.resolve()),'run'],cwd=str(ROOT),stdout=log,stderr=subprocess.STDOUT)
     finally:log.close()

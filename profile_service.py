@@ -2,7 +2,7 @@
 """Independent application job runner; history profiling never blocks live chat."""
 import argparse,fcntl,json,signal,threading,time
 from pathlib import Path
-import workflow,profiling,alerts
+import workflow,profiling,alerts,memory_maintenance
 ROOT=Path(__file__).resolve().parent
 
 def main():
@@ -28,12 +28,15 @@ def main():
  try:
   while not stop.is_set():
    cfg=json.loads(args.config.read_text())
-   if not cfg.get('profiling',{}).get('enabled',False):break
+   profiling_enabled=cfg.get('profiling',{}).get('enabled',False)
+   if not profiling_enabled and not cfg.get('memory_schema',{}).get('enabled'):break
    for group in cfg['groups']:
-    if group.get('enabled',True):profiling.enqueue(db,cfg,str(group['id']))
+    if profiling_enabled and group.get('enabled',True):profiling.enqueue(db,cfg,str(group['id']))
    active=db.execute("SELECT group_id,phase FROM profile_jobs WHERE status IN ('queued','running') ORDER BY updated,group_id LIMIT 1").fetchone()
    try:
-    api=json.loads((ROOT/'config.json').read_text());profiling.tick(db,cfg,api)
+    api=json.loads((ROOT/'config.json').read_text())
+    memory_maintenance.tick(db,cfg)
+    if profiling_enabled:profiling.tick(db,cfg,api)
     stop.wait(1)
    except Exception as exc:
     group=active['group_id'] if active else ''

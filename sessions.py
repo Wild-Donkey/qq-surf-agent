@@ -32,9 +32,10 @@ class ReactionAgent:
 
 
 class SessionPool:
-    def __init__(self):self.groups={}
+    def __init__(self):self.groups={};self.cfg=None
 
     def sync(self,db,cfg,now=None):
+        self.cfg=cfg
         now=time.time() if now is None else now
         idle=cfg.get('interaction',{}).get('idle_flush_seconds',300)
         rows=db.execute("SELECT group_id,max(created) AS latest FROM events WHERE created>? AND message_id NOT LIKE 'bot:%' GROUP BY group_id",(now-idle,)).fetchall()
@@ -44,8 +45,7 @@ class SessionPool:
             session.last_activity=max(session.last_activity,row['latest'])
             self._refresh(db,session,cfg)
 
-    @staticmethod
-    def _refresh(db,session,cfg):
+    def _refresh(self,db,session,cfg):
         rows=db.execute('''SELECT e.text,e.created,e.message_id,j.user_id FROM events e LEFT JOIN social_jobs j
             ON j.event_key=e.group_id||':'||e.message_id AND j.target_group=e.group_id
             WHERE e.group_id=? ORDER BY e.created DESC LIMIT ?''',
@@ -57,7 +57,10 @@ class SessionPool:
             if not text:continue
             turns.append({'text':text,'time':row['created']});budget-=len(text)
             if budget<=0:break
-        session.turns=list(reversed(turns))
+        refreshed=list(reversed(turns))
+        if session.turns and any(t not in refreshed for t in session.turns):
+            self.checkpoint(session,cfg,'before_compression')
+        session.turns=refreshed
 
     def task(self,db,cfg,job,now=None):
         now=time.time() if now is None else now
@@ -65,8 +68,19 @@ class SessionPool:
         self._refresh(db,session,cfg)
         return ReactionAgent.create(job,session)
 
+    @staticmethod
+    def checkpoint(session,cfg,reason):
+        if not cfg or not cfg.get('memory_schema',{}).get('enabled'):return
+        from memory import MarkdownMemory
+        import memory_maintenance
+        memory=MarkdownMemory(cfg['context_dir'])
+        try:memory.flush_session(session.group_id,session.turns)
+        finally:memory.close()
+        memory_maintenance.enqueue(cfg,session.group_id,reason)
+
     def flush_active(self,memory):
         for session in self.groups.values():
+            self.checkpoint(session,self.cfg,'shutdown')
             memory.flush_session(session.group_id,session.turns)
             # Checkpointing is a copy; active context remains until idle expiry.
 
@@ -75,7 +89,9 @@ class SessionPool:
         timeout=cfg.get('interaction',{}).get('idle_flush_seconds',300)
         expired=[key for key,session in self.groups.items() if now-session.last_activity>=timeout]
         for key in expired:
-            session=self.groups.pop(key)
+            session=self.groups[key]
+            self.checkpoint(session,cfg,'idle')
+            self.groups.pop(key)
             memory.flush_session(key,session.turns)
         if expired:memory.flush(cfg['groups'])
         return expired

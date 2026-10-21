@@ -587,6 +587,9 @@ def main():
                         if time.time()-float(event.get('time',0))<=180:ingest(db,event,cfg)
                 except Exception as exc:
                     alerts.record(db,'startup_history_failed','重启时补读群消息失败。',scope=group,details={'error':type(exc).__name__})
+            import memory_maintenance
+            for group in cfg['groups']:
+                if group.get('enabled',True):memory_maintenance.enqueue(cfg,group['id'],'startup')
             sessions=SessionPool()
             service_log.event('surf-bot','worker started mode='+cfg.get('mode','preview'))
             print('群间 workflow 已启动，监听127.0.0.1:{}，模式{}'.format(cfg.get('port',8766),cfg.get('mode','preview')),flush=True)

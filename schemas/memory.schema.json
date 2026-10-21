@@ -266,6 +266,7 @@
           "enum": [
             "worker",
             "history_distillation",
+            "incremental_memory",
             "manual",
             "migration",
             "bridge"
@@ -330,6 +331,7 @@
           "enum": [
             "worker",
             "history_distillation",
+            "incremental_memory",
             "manual",
             "migration",
             "bridge"
