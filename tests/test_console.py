@@ -1,7 +1,23 @@
-import concurrent.futures,json,tempfile,time,unittest
+"""console, completion, sessions_cli regression coverage."""
+import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import concurrent.futures
+import json
+import tempfile
+import time
+import unittest
 from unittest.mock import patch
-import console,operator_control,workflow,service_log,social
+import console
+import operator_control
+import workflow
+import service_log
+import social
+import completion
+import qq
+from memory import MarkdownMemory
+from sessions import SessionPool
+
 
 class ConsoleTests(unittest.TestCase):
  def setUp(self):
@@ -71,3 +87,91 @@ class ConsoleTests(unittest.TestCase):
     with self.assertRaises(SystemExit):console.console_lock()
    finally:first.close()
    second=console.console_lock();second.close()
+
+
+class CompletionTests(unittest.TestCase):
+    def test_wrap_unicode_columns(self):
+        self.assertEqual(console.wrap('中文abc', 4), ['中文', 'abc'])
+
+
+    def test_unique_command_and_service_action(self):
+        c = completion.Completer()
+        self.assertEqual(c.tab('/wor', 4, []), ('/worker ', 8))
+        self.assertEqual(c.tab('/bot re', 7, []), ('/bot restart ', 13))
+
+    def test_ambiguous_candidates_cycle(self):
+        c = completion.Completer()
+        self.assertEqual(c.tab('/s', 2, []), ('/s', 2))
+        one = c.tab('/s', 2, [])
+        two = c.tab(*one, [])
+        self.assertNotEqual(one, two)
+        self.assertTrue(one[0].startswith('/s'))
+
+    def test_group_name_and_id(self):
+        groups = [{'id': 123, 'name': '武汉棺材房'}, {'id': 456, 'name': '别的群', 'enabled': False}]
+        c = completion.Completer()
+        self.assertEqual(c.tab('/use 棺材', 7, groups)[0], '/use 武汉棺材房 ')
+        self.assertEqual(len(completion.candidates('/use ', groups)), 1)
+
+    def test_plain_text_not_rewritten(self):
+        c = completion.Completer()
+        self.assertEqual(c.tab('我要说一句', 5, []), ('我要说一句', 5))
+
+    def test_mark_sent_once_in_actual_payload(self):
+        db = workflow.connect(':memory:')
+        with db:
+            db.execute('INSERT INTO group_activity VALUES (?,?)', ('1', time.time()))
+        try:
+            with patch('agent.onebot_call', side_effect=[{'user_id': 99}, {'message_id': 123}]) as api:
+                qq.send(db, {'bot_id': 99}, {}, '1', '我来接话')
+            self.assertEqual(api.call_args.args[2]['message'][0]['data']['text'], '【人工接管】 我来接话')
+            self.assertEqual(qq.manual_text('【人工接管】 已标记'), '【人工接管】 已标记')
+        finally:
+            db.close()
+
+    def test_duplicate_names_show_names_and_resolve_exactly(self):
+        groups = [{'id': 1, 'name': '群'}, {'id': 2, 'name': '群'}, {'id': 3, 'name': '群聊'}]
+        options = completion.candidates('/use ', groups)
+        self.assertEqual(options[0][0], '/use 群 [1] ')
+        self.assertEqual(qq.resolve_group('群 [1]', {'groups': groups})['id'], 1)
+        self.assertEqual(qq.resolve_group('群聊', {'groups': groups})['id'], 3)
+
+
+class SessionAndCLITests(unittest.TestCase):
+    def test_idle_flush_releases_session(self):
+        db=workflow.connect(':memory:')
+        with tempfile.TemporaryDirectory() as tmp:
+            memory=MarkdownMemory(tmp)
+            cfg={'groups':[{'id':1,'name':'A'}],'interaction':{'idle_flush_seconds':300},'context_char_budget':100}
+            with db:db.execute('INSERT INTO events VALUES (?,?,?,?,?,?)',('1','event','fp','短句聊天','[]',1000))
+            pool=SessionPool();pool.sync(db,cfg,1001)
+            task=pool.task(db,cfg,{'target_group':'1','event_key':'1:abc'},1001)
+            self.assertEqual(task.target_group,'1')
+            self.assertEqual(pool.expire(memory,cfg,1299),[])
+            self.assertEqual(pool.expire(memory,cfg,1300),['1'])
+            self.assertEqual(pool.groups,{})
+            self.assertIn('短句聊天',(Path(tmp)/'groups/1/group.md').read_text())
+            memory.close()
+        db.close()
+    def test_manual_message_keeps_bot_running_and_records_receipt(self):
+        db=workflow.connect(':memory:');now=time.time()
+        with db:db.execute('INSERT INTO group_activity VALUES (?,?)',('1',now))
+        cfg={'bot_id':'99','operator_pause_minutes':5}
+        try:
+            with patch('agent.onebot_call',side_effect=[{'user_id':99},{'message_id':123}]):
+                qq.send(db,cfg,{},'1','我来接话')
+            self.assertEqual(db.execute('select count(*) from operator_pause').fetchone()[0],0)
+            self.assertEqual(db.execute('select status from operator_log').fetchone()[0],'sent')
+        finally:db.close()
+    def test_manual_inactive_group_blocked_and_dry_run_does_not_send(self):
+        db=workflow.connect(':memory:')
+        try:
+            with self.assertRaises(ValueError):qq.send(db,{'bot_id':'99'},{},'1','唤醒沉寂群',dry_run=True)
+            with db:db.execute('INSERT INTO group_activity VALUES (?,?)',('1',time.time()))
+            with patch('agent.onebot_call') as call:
+                qq.send(db,{'bot_id':'99'},{},'1','预览',dry_run=True);call.assert_not_called()
+        finally:db.close()
+
+
+if __name__ == '__main__':
+    unittest.main()

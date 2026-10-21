@@ -1,7 +1,25 @@
-import io,json,tempfile,time,unittest
+"""protocol, empty_model_output regression coverage."""
+import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import io
+import json
+import tempfile
+import time
+import unittest
 from unittest.mock import patch
-import protocol,application,chatgpt_auth,workflow,repairs,alerts,diagnostics
+import protocol
+import application
+import chatgpt_auth
+import workflow
+import repairs
+import alerts
+import diagnostics
+import social
+from protocol import ProtocolError
+import urllib.error
+
+
 class ProtocolTests(unittest.TestCase):
  def test_json_fence_is_unwrapped_but_prose_is_not_executed(self):
   self.assertEqual(application.decode('```json\n{"call":{"name":"wait","arguments":{}}}\n```')['name'],'wait')
@@ -28,3 +46,62 @@ class ProtocolTests(unittest.TestCase):
    with patch('social.generate_text') as infer:
     out=repairs.perform(db,{},root,{'id':1,'alert_id':1},{'action':'retry_model'});self.assertEqual(out['status'],'blocked');infer.assert_not_called()
    db.close()
+
+
+class EmptyOutputTests(unittest.TestCase):
+ def test_empty_output_reports_finish_reason_without_response_content(self):
+  model={'enabled':True,'provider':'compatible','model':'test','base_url':'http://localhost'}
+  response={'choices':[{'message':{'content':''},'finish_reason':'length'}],'usage':{'completion_tokens':4096}}
+  with patch('social.api_key',return_value='fake'),patch('vision.prepare',return_value=({'vision_status':{'attached':[],'unavailable':[]}},[])),patch('agent.request',return_value=json.dumps(response)):
+   with self.assertRaises(ProtocolError) as caught:social.generate_text(model,'JSON',{})
+  self.assertEqual(caught.exception.code,'model_empty_output');self.assertEqual(caught.exception.details['finish_reason'],'length')
+
+ def test_content_filter_is_distinct_from_json_or_empty_output(self):
+  model={'enabled':True,'provider':'compatible','model':'test','base_url':'http://localhost'}
+  for content in ('','{"partial":true}'):
+   response={'choices':[{'message':{'content':content},'finish_reason':'content_filter'}]}
+   with patch('social.api_key',return_value='fake'),patch('vision.prepare',return_value=({'vision_status':{'attached':[],'unavailable':[]}},[])),patch('agent.request',return_value=json.dumps(response)):
+    with self.assertRaises(ProtocolError) as caught:social.generate_text(model,'JSON',{})
+   self.assertEqual(caught.exception.code,'model_content_filtered')
+
+ def test_filtered_group_batch_is_blocked_and_cannot_be_requeued_as_pending(self):
+  import workflow,operator_control,time
+  db=workflow.connect(':memory:');cfg={'groups':[{'id':1}],'bot_id':99}
+  try:
+   key=operator_control.submit(db,cfg,'1','test')
+   job=db.execute("SELECT * FROM social_jobs WHERE event_key=?",('operator:'+key,)).fetchone()
+   with db:slot=db.execute("INSERT INTO model_calls(created,status) VALUES (?,'reserved')",(time.time(),)).lastrowid
+   social.block_filtered_batch(db,job,[job],slot,time.time());operator_control.wake(db)
+   self.assertEqual(db.execute('SELECT status FROM social_jobs').fetchone()[0],'content_filtered')
+   self.assertEqual(db.execute('SELECT status FROM operator_prompts').fetchone()[0],'blocked')
+  finally:db.close()
+
+
+class EnvelopeTests(unittest.TestCase):
+
+    def test_nested_envelopes_and_conflicts(self):
+        good = {'action': 'reply', 'text': '好', 'quality': 'natural'}
+        self.assertEqual(social.validate_decision(json.dumps({'type': 'json_object', 'content': json.dumps(good)}))['action'], 'reply')
+        with self.assertRaises(ValueError):
+            application.decode(json.dumps({'call': {'name': 'finish_turn', 'arguments': {'action': 'wait', 'quality': 'awkward'}}, 'quality': 'natural'}))
+        with self.assertRaises(ValueError):
+            application.decode(json.dumps({'call': {'name': 'wait', 'arguments': {}}, 'action': 'reply'}))
+
+    def test_safe_misplaced_fields_are_normalized_without_overriding(self):
+        raw = {'call': {'name': 'finish_turn', 'arguments': {'action': 'reply', 'text': '好'}}, 'quality': 'natural', 'group_state': {'summary': '聊天中'}, 'reason': '自然接话'}
+        result = social.validate_decision(json.dumps(raw))
+        self.assertEqual(result['action'], 'reply')
+        self.assertEqual(result['state_updates']['group_state']['summary'], '聊天中')
+        raw['action'] = 'wait'
+        with self.assertRaises(social.ProtocolError):
+            social.validate_decision(json.dumps(raw))
+
+    def test_api_shape_errors_use_short_protocol_backoff(self):
+        with self.assertRaises(social.ProtocolError) as caught:
+            social.validate_decision('{"call":{"name":"wait","arguments":{}},"unexpected":"private text"}')
+        self.assertEqual(caught.exception.code, 'ambiguous_api_envelope')
+        self.assertNotIn('private text', json.dumps(caught.exception.details))
+
+
+if __name__ == '__main__':
+    unittest.main()

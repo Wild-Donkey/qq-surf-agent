@@ -114,6 +114,8 @@ python3 workflow.py inbox
 python3 -m unittest discover -s tests -v
 ```
 
+测试按功能归类，分类说明与环境要求见 [tests/README.md](tests/README.md)。
+
 测试覆盖签名、账号核对、目标绑定、重复事件、跨群已见、图片去重、Markdown写回、召回长度、模型异常退避、每日限额、14天沉寂群保护和告警合并。服务HTTP健康检查：`http://127.0.0.1:8767/health`。
 
 `agent.py`保留独立RSS/Atom采集与本地导入功能；`workflow.py`是群间消息服务，`social.py`是群友交互决策，`memory.py`是离线记忆，`alerts.py`是异常通知，`supervisor.py`负责守护。
