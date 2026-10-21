@@ -22,14 +22,14 @@ class SessionAndCLITests(unittest.TestCase):
             self.assertIn('短句聊天',(Path(tmp)/'groups/1/group.md').read_text())
             memory.close()
         db.close()
-    def test_manual_message_pauses_bot_and_records_receipt(self):
+    def test_manual_message_keeps_bot_running_and_records_receipt(self):
         db=workflow.connect(':memory:');now=time.time()
         with db:db.execute('INSERT INTO group_activity VALUES (?,?)',('1',now))
         cfg={'bot_id':'99','operator_pause_minutes':5}
         try:
             with patch('agent.onebot_call',side_effect=[{'user_id':99},{'message_id':123}]):
                 qq.send(db,cfg,{},'1','我来接话')
-            self.assertGreater(db.execute('select until_time from operator_pause').fetchone()[0],now)
+            self.assertEqual(db.execute('select count(*) from operator_pause').fetchone()[0],0)
             self.assertEqual(db.execute('select status from operator_log').fetchone()[0],'sent')
         finally:db.close()
     def test_manual_inactive_group_blocked_and_dry_run_does_not_send(self):

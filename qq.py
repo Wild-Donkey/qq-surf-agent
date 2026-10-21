@@ -52,7 +52,7 @@ def send(db,cfg,api,target,text,private=False,dry_run=False):
     with db:
         ident=db.execute('INSERT INTO operator_log(target,kind,fingerprint,status,created) VALUES (?,?,?,?,?)',
                          (str(target),'private' if private else 'group',fp,'uncertain',now)).lastrowid
-        if not private:pause(db,target,cfg.get('operator_pause_minutes',5))
+
     action='send_private_msg' if private else 'send_group_msg'
     payload={'user_id' if private else 'group_id':int(target),'message':[{'type':'text','data':{'text':text}}]}
     try:
@@ -63,7 +63,12 @@ def send(db,cfg,api,target,text,private=False,dry_run=False):
                 db.execute('INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?)',(str(target),'bot:'+str(result['message_id']),fp,'[自己·人工接管] '+text,'[]',now))
                 db.execute('INSERT OR IGNORE INTO seen VALUES (?,?,?)',(str(target),workflow.fingerprint(text,[]),now))
         print('已发送，消息编号：'+str(result['message_id']))
-        if not private:print('本群自动发言已暂停 '+str(cfg.get('operator_pause_minutes',5))+' 分钟。')
+        if not private:
+            import operator_control
+            try:operator_control.owner_message(db,cfg,target,result['message_id'],text)
+            except Exception:
+                import service_log
+                service_log.event('surf-bot','owner notification pending group='+str(target))
         return result
     except Exception as exc:
         alerts.record(db,'operator_'+type(exc).__name__,'人工CLI发送失败，结果待核实；没有自动重发。')
@@ -116,3 +121,32 @@ def main():
 if __name__=='__main__':
     try:main()
     except Exception as exc:print('操作失败：'+str(exc));raise SystemExit(1)
+
+
+def send_image(db,cfg,api,target,raw):
+    import base64,io
+    from PIL import Image
+    if not raw or len(raw)>15_000_000:raise ValueError('图片为空或过大')
+    with Image.open(io.BytesIO(raw)) as image:
+        if image.format!='PNG' or image.width*image.height>16_000_000:raise ValueError('图片格式或尺寸不支持')
+        image.verify()
+    if not workflow.group_is_active(db,target,cfg):raise ValueError('群不活跃或无法发言')
+    if str(agent.onebot_call(api,'get_login_info').get('user_id'))!=str(cfg['bot_id']):raise ValueError('登录账号不匹配')
+    now=time.time();fp=hashlib.sha256(b'manual-image:'+raw).hexdigest();text=MANUAL_MARK+' 截图'
+    outbox=ROOT/'runtime'/'outbox';outbox.mkdir(parents=True,exist_ok=True,mode=0o700)
+    path=outbox/(fp+'.png');path.write_bytes(raw);path.chmod(0o600)
+    with db:ident=db.execute("INSERT INTO operator_log(target,kind,fingerprint,status,created) VALUES (?,'group-image',?,'uncertain',?)",(str(target),fp,now)).lastrowid
+    try:
+        result=agent.onebot_call(api,'send_group_msg',{'group_id':int(target),'message':[{'type':'text','data':{'text':text}},{'type':'image','data':{'file':'base64://'+base64.b64encode(raw).decode()}}]})
+    except Exception as exc:
+        alerts.record(db,'operator_image_'+type(exc).__name__,'截图发送结果待核实，不会自动重发。',scope=str(target))
+        raise ValueError('截图发送结果待核实，请勿直接重试')
+    with db:
+        db.execute("UPDATE operator_log SET status='sent',message_id=? WHERE id=?",(str(result['message_id']),ident))
+        db.execute('INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?)',(str(target),'bot:'+str(result['message_id']),fp,text,'[]',now))
+    import operator_control
+    try:operator_control.owner_message(db,cfg,target,result['message_id'],text,image=raw)
+    except Exception:
+        import service_log
+        service_log.event('surf-bot','owner image notification pending group='+str(target))
+    return result

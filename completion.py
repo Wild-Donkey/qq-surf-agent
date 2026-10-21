@@ -1,12 +1,12 @@
 """Discoverable command, service-action and group completion; no command execution."""
 COMMANDS={
  '/groups':'列出可用群','/use':'选择群（支持群名或群号）','/say':'发送带人工接管标记的消息',
- '/takeover':'接管当前群，默认5分钟','/pause':'暂停自动回复','/resume':'恢复自动回复',
- '/worker':'给当前群worker提交prompt','/jobs':'查看worker指令状态','/status':'查看服务和接管状态',
+ '/takeover':'人工发言模式，不暂停bot','/pause':'暂停自动回复','/resume':'恢复自动回复',
+ '/paste':'发送剪贴板图片到当前群','/worker':'给当前群worker提交prompt','/jobs':'查看worker指令状态','/status':'查看服务和接管状态',
  '/bot':'管理surf bot','/helper':'管理QQ Helper','/help':'查看所有命令','/quit':'退出界面，保留后台服务'}
 ACTIONS={'/bot':{'start':'启动bot','restart':'重启worker','stop':'停止bot服务'},
  '/helper':{'status':'查看Helper状态','start':'启动QQ Helper','wrap':'封装现有QQ并持久记录日志','stop':'停止受管理的QQ Helper'},
- '/takeover':{str(n):'接管'+str(n)+'分钟' for n in (5,10,30,60)},'/pause':{str(n):'暂停'+str(n)+'分钟' for n in (5,10,30,60)}}
+'/pause':{str(n):'暂停'+str(n)+'分钟' for n in (5,10,30,60)}}
 
 def candidates(prefix,groups):
  if prefix and not prefix.startswith('/'):return []

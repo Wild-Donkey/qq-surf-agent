@@ -2,10 +2,10 @@
 """Two live log panes and a non-blocking local operations prompt (stdlib only)."""
 import argparse,collections,concurrent.futures,curses,json,os,queue,shlex,signal,subprocess,sys,time,unicodedata
 from pathlib import Path
-import agent,qq,workflow,operator_control,service_log,completion
+import agent,qq,workflow,operator_control,service_log,completion,chat_view,avatar_palette,clipboard_image
 ROOT=Path(__file__).resolve().parent
-HELP='''/groups  /use 群名或群号  /say 内容（或直接输入）  /takeover [分钟]  /resume
-/worker prompt  /jobs  /status  /bot start|restart|stop  /helper status|start|wrap|stop
+HELP='''/groups  /use 群名或群号  /say 内容（或直接输入）  /takeover  /resume
+/paste  /worker prompt  /jobs  /status  /bot start|restart|stop  /helper status|start|wrap|stop
 /help  /quit  · Tab补全命令/群名，F6切换日志窗，PgUp/PgDn翻页，End回到实时；退出界面不停止服务'''
 
 def alive(path):
@@ -62,10 +62,17 @@ class Controller:
    if command=='/groups':return '\n'.join(str(g['id'])+' '+g['name'] for g in cfg['groups'] if g.get('enabled',True))
    if command=='/use':
     g=qq.resolve_group(body,cfg);self.group=str(g['id']);(ROOT/'runtime/console-state.json').write_text(json.dumps({'group':self.group}));return '当前群：'+g['name']+' ('+self.group+')'
-   if command in ('/takeover','/pause','/resume'):
+   if command=='/paste':
+    if not self.group:raise ValueError('先 /use 选择聊天目标')
+    raw=clipboard_image.read_png();result=qq.send_image(db,cfg,api,self.group,raw);return '截图已发送，message_id='+str(result['message_id'])
+   if command=='/takeover':
+    if not self.group:raise ValueError('先 /use 选择聊天目标')
+    qq.pause(db,self.group,0)
+    return '人工发言带【人工接管】标记，按bot owner发言处理；bot保持自动运行，暂停请用 /pause'
+   if command in ('/pause','/resume'):
     if not self.group:raise ValueError('先 /use 选择群')
     minutes=0 if command=='/resume' else int(body or 5)
-    qq.pause(db,self.group,minutes);service_log.event('surf-bot','operator pause group='+self.group+' minutes='+str(minutes));return '已恢复自动回复' if not minutes else '接管 '+str(minutes)+' 分钟；仍会读取消息'
+    qq.pause(db,self.group,minutes);service_log.event('surf-bot','operator pause group='+self.group+' minutes='+str(minutes));return '已恢复自动回复' if not minutes else '已暂停自动回复 '+str(minutes)+' 分钟；仍会读取消息'
    if command=='/say':return self.execute(body)
    if command=='/worker':
     if not self.group:raise ValueError('先 /use 选择群')
@@ -123,6 +130,7 @@ def wrap(text,width):
 
 def run(screen):
  curses.curs_set(1);screen.timeout(100);screen.keypad(True)
+ avatars=avatar_palette.AvatarPalette();styles=chat_view.Styles(avatars)
  controller=Controller();buffers=[collections.deque(maxlen=2000),collections.deque(maxlen=2000)];offsets=[0,0];focus=0
  tails=[Tail(ROOT/'runtime/logs/qq-helper.log'),Tail(ROOT/'runtime/logs/surf-bot.log')]
  # Include supervisor output alongside detailed bot events.
@@ -136,8 +144,8 @@ def run(screen):
   try:result=controller.execute(line)
   except Exception as exc:result='操作失败：'+service_log.clean(str(exc))
   outputs.put(result);service_log.event('console',result)
- def put(y,x,value,width):
-  try:screen.addstr(y,x,clip(value,max(0,width)))
+ def put(y,x,value,width,attr=0):
+  try:screen.addstr(y,x,clip(value,max(0,width)),attr)
   except curses.error:pass
  try:
   while True:
@@ -157,8 +165,13 @@ def run(screen):
      x=0 if i==0 else left+1;columns=left if i==0 else width-left-2
      put(0,x,('▶ ' if i==focus else '  ')+title+(' [历史]' if offsets[i] else ' [实时]'),columns)
      lines=list(buffers[i]);end=max(0,len(lines)-offsets[i]);visual=[]
-     for line in lines[max(0,end-pane):end]:visual.extend(wrap(line,columns))
-     for n,line in enumerate(visual[-pane:]):put(1+n,x,line,columns)
+     for line in lines[max(0,end-pane):end]:
+      row=chat_view.parse(line) if i==0 else chat_view.Row(line)
+      attr=styles.attr(row) if i==0 else 0
+      visual.extend((part,attr) for part in wrap(row.text,columns))
+     for n,(line,attr) in enumerate(visual[-pane:]):
+      padding=max(0,columns-display_width(line))
+      put(1+n,x,line+' '*padding,columns,attr)
     for y in range(pane+1):put(y,left,'│',1)
     put(height-7,0,'当前群 '+str(controller.group or '未选择')+' · 手动发送标记【人工接管】',width-1)
     choices=completer.items if completer.last==(text,cursor) else completion.candidates(text[:cursor],groups)
@@ -194,7 +207,8 @@ def run(screen):
    elif key=='\x15':text='';cursor=0
    elif isinstance(key,str) and key.isprintable() and len(text)<12000:text=text[:cursor]+key+text[cursor:];cursor+=1
  except KeyboardInterrupt:pass
- finally:pool.shutdown(wait=False,cancel_futures=True)
+ finally:
+  avatars.close();pool.shutdown(wait=False,cancel_futures=True)
 
 def main():
  p=argparse.ArgumentParser(description='QQ surf terminal console');p.add_argument('--command',help='执行一条控制台命令后退出');p.add_argument('--helper-wrap',action='store_true',help='将当前QQ实例重启为持久日志启动');args=p.parse_args()

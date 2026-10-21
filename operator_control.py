@@ -38,3 +38,27 @@ def wake(db):
  with db:
   for row in db.execute("SELECT id,group_id FROM operator_prompts WHERE status='queued'").fetchall():
    db.execute("UPDATE social_jobs SET status='pending' WHERE event_key=? AND target_group=? AND status='decided'",('operator:'+row['id'],row['group_id']))
+
+
+def owner_message(db,cfg,group,message_id,text,image=None):
+ import social,participants
+ owner=str(cfg.get('alerts',{}).get('owner_qq',''))
+ if not owner.isdigit():return
+ now=time.time();event={'group_id':str(group),'user_id':owner,'message_id':str(message_id),'time':now,'message':[{'type':'text','data':{'text':'[bot owner 人工发言] '+text}}]}
+ with db:
+  participants.observe(db,dict(event,message_id='operator:'+str(message_id)),cfg,text,now)
+  participants.set_profile(db,owner,'human',1,'本机运营者人工发言','operator',now)
+  social.enqueue(db,event,cfg,now)
+ if image is not None:
+  import vision,hashlib
+  from pathlib import Path
+  preview,_=vision.decode_image(image);key=hashlib.sha256(preview).hexdigest()+'.jpg'
+  directory=Path(cfg['context_dir'])/'media';directory.mkdir(parents=True,exist_ok=True)
+  (directory/key).write_bytes(preview)
+  with db:db.execute('UPDATE social_jobs SET trigger_images=1,trigger_media=? WHERE event_key=? AND target_group=?',(json.dumps([{'cached_asset_key':key}]),str(group)+':'+str(message_id),str(group)))
+ service_log.event('surf-bot','owner manual message group='+str(group)+' message_id='+str(message_id))
+
+def owner_for(db,cfg,group,message_id):
+ mid=str(message_id).removeprefix('bot:')
+ row=db.execute("SELECT 1 FROM operator_log WHERE target=? AND message_id=? AND kind IN ('group','group-image') AND status='sent' LIMIT 1",(str(group),mid)).fetchone()
+ return str(cfg.get('alerts',{}).get('owner_qq','')) if row else None
