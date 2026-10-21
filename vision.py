@@ -36,18 +36,18 @@ def decode_image(raw):
     with warnings.catch_warnings():
         warnings.simplefilter('error',Image.DecompressionBombWarning)
         with Image.open(io.BytesIO(raw)) as image:
-            if image.format not in ('JPEG','PNG','GIF','WEBP') or image.width*image.height>MAX_PIXELS:
+            if image.format not in ('JPEG','MPO','PNG','GIF','WEBP') or image.width*image.height>MAX_PIXELS:
                 raise ValueError('unsupported_or_oversized_image')
             source_format=image.format
             image.seek(0)  # Animated memes: first frame only, reported explicitly to the worker.
             animated=bool(getattr(image,'is_animated',False))
-            if source_format=='JPEG':image.draft('RGB',(1600,1600))
+            if source_format in ('JPEG','MPO'):image.draft('RGB',(1600,1600))
             image.thumbnail((1600,1600))
             image=image.convert('RGBA')
             background=Image.new('RGB',image.size,'white');background.paste(image,mask=image.getchannel('A'))
             out=io.BytesIO();background.save(out,format='JPEG',quality=88)
             capture=_CAPTURE.get()
-            if capture is not None:capture.update(raw=raw,extension={'JPEG':'jpg','PNG':'png','GIF':'gif','WEBP':'webp'}[source_format])
+            if capture is not None:capture.update(raw=raw,extension={'JPEG':'jpg','MPO':'jpg','PNG':'png','GIF':'gif','WEBP':'webp'}[source_format])
             return out.getvalue(),animated
 
 

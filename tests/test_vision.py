@@ -52,3 +52,9 @@ class VisionTests(unittest.TestCase):
         data=io.BytesIO();Image.new('RGB',(4200,4000),'white').save(data,format='PNG')
         output,_=vision.decode_image(data.getvalue())
         with Image.open(io.BytesIO(output)) as image:self.assertLessEqual(max(image.size),1600)
+
+    def test_phone_mpo_image_decodes_first_frame(self):
+        from PIL import Image
+        data=io.BytesIO();Image.new('RGB',(64,64),'red').save(data,format='MPO',save_all=True,append_images=[Image.new('RGB',(64,64),'blue')])
+        output,_=vision.decode_image(data.getvalue())
+        self.assertTrue(output.startswith(b'\xff\xd8'))
