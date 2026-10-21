@@ -14,15 +14,21 @@ class ReviewFixTests(unittest.TestCase):
   with patch('social.generate_text',side_effect=exc) as gen:
    with self.assertRaises(urllib.error.HTTPError):social.call_model({}, {})
    self.assertEqual(gen.call_count,1)
- def test_retry_reserved_accounted_and_forced_low(self):
+ def test_retry_reserved_accounted_and_kept_fast(self):
   calls=[];done=[]
   def generate(model,*args):
    calls.append(model)
    return ('bad' if len(calls)==1 else '{"call":{"name":"wait","arguments":{}}}'),{'prompt_tokens':10,'completion_tokens':2}
   model={'reasoning_effort':'none','_retry_reserve':lambda usage:42,'_retry_complete':lambda *args:done.append(args)}
   with patch('social.generate_text',side_effect=generate):d,u=social.call_model(model,{})
-  self.assertEqual([c['reasoning_effort'] for c in calls],['none','low'])
+  self.assertEqual([c['reasoning_effort'] for c in calls],['none','none'])
   self.assertEqual(done[0][:2],(42,True));self.assertEqual(done[0][2]['prompt_tokens'],10);self.assertEqual(u['prompt_tokens'],10)
+ def test_retry_timeout_keeps_specific_error(self):
+  done=[]
+  model={'_retry_reserve':lambda usage:42,'_retry_complete':lambda *args:done.append(args)}
+  with patch('social.generate_text',side_effect=[('bad',{}),TimeoutError('read timed out')]):
+   with self.assertRaises(TimeoutError):social.call_model(model,{})
+  self.assertEqual(done[0][2]['_error'],'TimeoutError')
  def test_standalone_invalid_output_does_not_make_unreserved_retry(self):
   with patch('social.generate_text',return_value=('bad',{})) as gen:
    with self.assertRaises(ValueError):social.call_model({}, {})

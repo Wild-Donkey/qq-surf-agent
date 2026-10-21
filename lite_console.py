@@ -29,31 +29,28 @@ def print_chat_batch(output,pending,reading):
  if reading:output.write('> ')
  output.flush()
 
-def terminal_session():
+def make_completer(root):
  sys.path.insert(0,str(Path(__file__).resolve().parent/'runtime/deps'))
- from prompt_toolkit import PromptSession
  from prompt_toolkit.completion import Completer,Completion
- from prompt_toolkit.output import ColorDepth
  class Groups(Completer):
   def get_completions(self,document,event):
    prefix=document.text_before_cursor
-   try:groups=json.loads((ROOT/'workflow.json').read_text()).get('groups',[])
+   try:groups=json.loads((root/'workflow.json').read_text()).get('groups',[])
    except (OSError,ValueError):groups=[]
-   for value,label in completion.candidates(prefix,groups):
-    yield Completion(value,start_position=-len(prefix),display=value,display_meta=label)
- return PromptSession(completer=Groups(),complete_while_typing=False,mouse_support=False,
-                      color_depth=ColorDepth.DEPTH_1_BIT,reserve_space_for_menu=0)
+   for value,label in completion.candidates(prefix,groups):yield Completion(value,start_position=-len(prefix),display=value,display_meta=label)
+ return Groups()
+
 
 def run(controller=None,input_fn=None,output=None):
  output=output or sys.stdout
  if input_fn is None and sys.stdin.isatty() and output.isatty() and os.environ.get('TERM')!='dumb':
-  try:session=terminal_session()
-  except ImportError:session=None
-  if session:
-   from prompt_toolkit.patch_stdout import patch_stdout
-   # Release any inherited fullscreen/mouse tracking before using scrollback.
+  try:
+   completer=make_completer(ROOT)
+   from lite_view import run as run_view
+  except ImportError:run_view=None
+  if run_view:
    output.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l\x1b[?1049l');output.flush()
-   with patch_stdout(raw=True):return _run(controller,session.prompt,sys.stdout,managed_prompt=True)
+   return run_view(controller,ROOT,completer)
  return _run(controller,input_fn,output)
 
 def _run(controller=None,input_fn=None,output=None,managed_prompt=False):

@@ -29,6 +29,7 @@ SYSTEM='''author_role=bot_owner 的记录已由本机发送回执验证，是运
 operator_prompts 是本机运营者直接提交给你的本轮任务，不是群友消息；结合当前群上下文执行，仍只能通过应用开放接口行动，不得改变接收群或绕过应用发送规则。
 你是一个已公开说明是 AI bot 的普通群友，喜欢搬屎（抽象烂梗、离谱见闻、有意思的素材），按群内语境自然聊天。
 你没有固定叫「石头」；之前那是错误介绍，不要沿用。群友喊Luna时自然接话，称呼可以随群内约定。
+每个request_slot对应一次5秒静默/20秒上限触发的完整处理窗口，不是pending_requests中的单条待办。本轮必须有understanding独立字段：summary写可核实的当前局面，images写实际附图可见内容，uncertainties写未确定事实；这是观察笔记，不写思维推导。可先调record_understanding保存，再决定公开回复；也可finish_turn同时带understanding，wait也照常保存。图片的“图里有什么”和场景的“谁刚做了什么”写在understanding，不塞进text。只有群友明确要求解释图片/总结时才公开说明。
 发言人ID、昵称、引用作者、引用原文和@对象是基础信息。reference_evidence是应用补读的本群原始记录；回答“谁说的/那个人是谁/还记得吗”时先核对引用作者和原始发言者、人物记忆，必要时search_history。bot自己的转述不是事件的原始证据，不能用“没印象但记得有人…”复述问题冒充回答；分清讲述者、经历承受者与他提到的邻居/他人；如果“那个人”可能指讲述者或被抱怨者，直接区分两者：讲这事的群友是谁、第三方姓名是否未知，不能随意选其中一个含混回答，也不能拿“那家/楼上那位”代替姓名核实。证据不足明确未知，不编名字。
 判断对象是当前整个context的局面，不是某条消息。触发消息只唤醒一次观察任务：读完整个窗口、最新对话、人物/群记忆和待办后，作一次整体的回应决策。不要盯住trigger_event或最后一条逐句回应。每一条消息都要读，但读到消息不构成发言理由。先判断是否需要回应，再选择文字、单个表情或按序组合；普通闲聊允许wait；主动插话必须比保持沉默更有价值：确有补充、自然且具体的笑点或对方确实在和你互动。不是只有知识回答才值得说话，但勉强能接上一句不等于值得开口。
 pending_requests 是尚未处理的明确请求，优先级高于普通聊天，不能被新消息覆盖或略过。处理时在finish_turn中带request_ids（真实event_key数组）和request_outcome（completed/declined/needs_info）。转发请求必须实际调用转发接口才可completed；无法执行就明确解释或追问，不能用无关接梗替代。普通无关闲聊可以选择不回应。拒绝尬聊：没有自然话头就wait，不硬接梗、不复述原话、不泛泛附和，不强行反问和续话，不反复报到、解释自己或刷“收到”。阅读全部消息不等于每批都必须发言。
@@ -117,13 +118,14 @@ def call_model(model,payload):
         retry_id=reserve(usage)
         slow=dict(model)
         if model.get('provider')!='chatgpt':
-            slow['reasoning_effort']='low'
-            slow['max_completion_tokens']=max(model.get('max_completion_tokens',4096),3000)
+            slow['reasoning_effort']='none'
+            slow['max_completion_tokens']=min(6144,max(model.get('max_completion_tokens',4096)*2,3000))
         next_usage={}
         try:
-            raw,next_usage=generate_text(slow,instructions+'\n上次输出未通过接口校验。只返回一个 call 信封；状态只写必要的简短增量。',payload)
+            raw,next_usage=generate_text(slow,instructions+'\n上次输出未通过接口校验。只返回一个 call 信封；每次只做一个操作，最多更新两人成员状态，字段写简短增量，禁止展开完整画像。优先完成当前聊天决定。',payload)
             result=validate_decision(raw)
-        except Exception:
+        except Exception as exc:
+            next_usage['_error']=getattr(exc,'code',type(exc).__name__)
             model['_retry_complete'](retry_id,False,next_usage)
             raise
         model['_retry_complete'](retry_id,True,next_usage)
@@ -166,6 +168,7 @@ def generate_text(model,instructions,payload):
     choice=response['choices'][0]
     raw=choice['message'].get('content')
     usage=response.get('usage',{});usage['_vision_status']=private_vision_status
+    usage['_finish_reason']=str(choice.get('finish_reason','unknown'))[:40]
     if choice.get('finish_reason')=='content_filter' or choice['message'].get('refusal'):
         raise ProtocolError('model_response','model_content_filtered',{'finish_reason':'content_filter','completion_tokens':usage.get('completion_tokens',0)})
     if not isinstance(raw,str) or not raw.strip():
@@ -425,13 +428,17 @@ def tick(db,cfg,sessions=None):
         def reserve_retry(first_usage):
             with db:db.execute('UPDATE model_calls SET input_tokens=?,output_tokens=? WHERE id=?',(first_usage.get('prompt_tokens',0),first_usage.get('completion_tokens',0),model['_active_call_id']))
             retry_id=model_gate.reserve(db,cfg)
-            while retry_id is None:
+            deadline=time.monotonic()+10
+            while retry_id is None and time.monotonic()<deadline:
                 time.sleep(.5);retry_id=model_gate.reserve(db,cfg)
+            if retry_id is None:raise ProtocolError('worker_api','retry_budget_unavailable')
             return retry_id
         def complete_retry(retry_id,ok,retry_usage):
-            with db:db.execute("UPDATE model_calls SET status=?,input_tokens=?,output_tokens=?,error=? WHERE id=?",('ok' if ok else 'failed',retry_usage.get('prompt_tokens',0),retry_usage.get('completion_tokens',0),None if ok else 'format_retry_failed',retry_id))
+            with db:db.execute("UPDATE model_calls SET status=?,input_tokens=?,output_tokens=?,error=? WHERE id=?",('ok' if ok else 'failed',retry_usage.get('prompt_tokens',0),retry_usage.get('completion_tokens',0),None if ok else retry_usage.get('_error','format_retry_failed'),retry_id))
         model=dict(model,_retry_reserve=reserve_retry,_retry_complete=complete_retry,_active_call_id=call_id)
         try:
+            import understanding
+            request_slot=understanding.begin(cfg,job['target_group'],window['cutoff'],batch)
             task=sessions.task(db,cfg,job,now)
             payload,candidates=choose(db,cfg,memory,job,task)
             payload['operator_prompts']=operator_control.pending(db,job['target_group'])
@@ -466,6 +473,9 @@ def tick(db,cfg,sessions=None):
             prior=db.execute('SELECT value FROM metrics WHERE key=?',(summary_key,)).fetchone()
             payload['already_read_window_summary']=prior[0] if prior else ''
             summary=application.settle_memory(memory,job['target_group'],batch,payload['unread_messages'])
+            payload['request_slot']=request_slot
+            payload['understanding_contract']=understanding.CONTRACT
+            payload['understanding_context']=understanding.recent(cfg,job['target_group'])
             model_started=time.monotonic()
             decision,usage=call_model(model,payload)
             payload['_attached_images']=usage.get('_vision_status',{}).get('attached',[])
@@ -489,6 +499,16 @@ def tick(db,cfg,sessions=None):
                 for key in ('prompt_tokens','completion_tokens'):usage[key]=usage.get(key,0)+next_usage.get(key,0)
                 usage['_vision_status']=next_usage.get('_vision_status',{})
             if decision['action']=='read':decision={'action':'wait','text':'','reason':'本轮读取次数达到上限'}
+            if decision.get('understanding') is not None:
+                try:understanding.save(cfg,job['target_group'],payload,decision['understanding'],db)
+                except (ValueError,OSError) as exc:
+                    code=str(exc) if isinstance(exc,ValueError) and re.fullmatch('[a-z_]{1,100}',str(exc)) else type(exc).__name__
+                    decision['_understanding_error']=code
+                    understanding.mark(cfg,payload['request_slot']['request_id'],'rejected')
+                    service_log.event('surf-bot','worker understanding rejected group='+str(job['target_group'])+' request_id='+payload['request_slot']['request_id']+' code='+code)
+            elif payload['request_slot']['status']!='saved':
+                understanding.mark(cfg,payload['request_slot']['request_id'],'missing')
+                service_log.event('surf-bot','worker understanding missing group='+str(job['target_group'])+' request_id='+payload['request_slot']['request_id'])
             decision=application.with_web_sources(decision,payload)
             if decision.get('state_updates'):
                 outcome=application.apply_worker_states(cfg,job['target_group'],payload,decision['state_updates'],db)
@@ -541,6 +561,9 @@ def tick(db,cfg,sessions=None):
                 db.execute("UPDATE model_calls SET status='ok',input_tokens=?,output_tokens=? WHERE id=?",(usage.get('prompt_tokens',0),usage.get('completion_tokens',0),call_id))
                 db.execute('INSERT OR REPLACE INTO metrics VALUES (?,?)',('model_state','ready'))
         except Exception as exc:
+            if 'request_slot' in locals():
+                try:understanding.mark(cfg,request_slot['request_id'],'failed')
+                except Exception:pass
             error=exc.code if isinstance(exc,ProtocolError) else type(exc).__name__
             if error=='model_content_filtered':
                 block_filtered_batch(db,job,batch,call_id,time.time())

@@ -6,6 +6,7 @@ import archive,emoticons,participants
 from protocol import parse_json
 import memory_store
 TOOLS=[
+ {'name':'record_understanding','description':'保存本轮局面理解（内部字段），参数understanding:{summary,images:[{reference,description,is_sticker,tags}],uncertainties}；写context与日志，之后再决定公开回复'},
  {'name':'web_search','description':'公开互联网搜索，参数query（最多300字符），返回来源标题、摘要、链接和检索时间'},
  {'name':'read_webpage','description':'读取公开网页正文，参数url；不访问本机、内网、登录账号或下载文件'},
  {'name':'get_memory_schema','description':'读取群/成员状态与画像的规范字段，不接受任意字段'},
@@ -23,11 +24,12 @@ TOOLS=[
  {'name':'merged_forward','description':'合并转发一段节目：bundle_id、message_ids、quality=natural；搬本群节目到其他活跃群时再带 outgoing_moments.destination.route_id，省略route_id则搬入当前群'},
  {'name':'forward','description':'转发当前群中某条消息（原生转发卡片），参数 message_id（取自 recent_target_messages）'},
  {'name':'wait','description':'保持安静，参数 reason'}]
-ARGUMENTS={'web_search':{'query'},'read_webpage':{'url'},'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id'},'search_history':{'query'},'list_emoticons':set(),'search_emoticons':{'query','include_unreviewed'},'view_emoticon':{'id'},'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'share_image':{'image_id','route_id','quality'},'merged_forward':{'bundle_id','message_ids','quality','route_id'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id','bundle_id','message_ids','route_id','image_id','image_share'}}
+ARGUMENTS={'record_understanding':{'understanding'},'web_search':{'query'},'read_webpage':{'url'},'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id'},'search_history':{'query'},'list_emoticons':set(),'search_emoticons':{'query','include_unreviewed'},'view_emoticon':{'id'},'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'share_image':{'image_id','route_id','quality'},'merged_forward':{'bundle_id','message_ids','quality','route_id'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id','bundle_id','message_ids','route_id','image_id','image_share'}}
 for _terminal in ('finish_turn','reply','share','forward','merged_forward','share_image'):
  ARGUMENTS[_terminal].update({'request_ids','request_outcome'})
 ARGUMENTS['reply'].add('reply_parts');ARGUMENTS['finish_turn'].add('reply_parts')
-READS={'web_search','read_webpage','get_memory_schema','update_states','read_context','get_member','search_history','list_emoticons','search_emoticons','view_emoticon'}
+for _terminal in ('finish_turn','reply','wait','share','forward','merged_forward','share_image'):ARGUMENTS[_terminal].add('understanding')
+READS={'record_understanding','web_search','read_webpage','get_memory_schema','update_states','read_context','get_member','search_history','list_emoticons','search_emoticons','view_emoticon'}
 def decode(raw):
  value=parse_json(raw,'worker_api')
  # Bounded normalization; never let outer fields override explicit arguments.
@@ -59,6 +61,11 @@ def decode(raw):
  if name in ('reply','share') and not isinstance(args.get('text',''),str):raise ValueError('invalid_text')
  return {'name':name,'arguments':args}
 def decision(call):
+ result=_decision(call)
+ if 'understanding' in call['arguments']:result['understanding']=call['arguments']['understanding']
+ return result
+
+def _decision(call):
  name=call['name'];args=call['arguments']
  quality=args.get('quality')
  if (name in ('reply','share','merged_forward','share_image') or name=='finish_turn' and args.get('action') in ('reply','share','merged_forward','share_image')) and quality!='natural':
@@ -80,6 +87,9 @@ def read(db,cfg,target,payload,call):
  if name in ('web_search','read_webpage'):
   import internet
   return internet.tool(cfg,name,args)
+ if name=='record_understanding':
+  import understanding
+  return understanding.save(cfg,target,payload,args.get('understanding'),db)
  if name=='get_memory_schema':return {k:memory_store.SCHEMA['$defs'][k] for k in ('FactInput','RelationInput','StateInput','GroupPortraitInput','PersonPortraitInput')}
  if name=='update_states':
   outcome=apply_worker_states(cfg,target,payload,args,db)
@@ -220,6 +230,9 @@ def update_states(cfg,group,payload,args,db=None):
         tags=image.get('tags',[])
         if not isinstance(tags,list) or len(tags)>12 or any(not isinstance(tag,str) or not 1<=len(tag)<=40 for tag in tags):
             rejected+=1;continue
+        meta=available[image['reference']]
+        if meta.get('group_id') is not None and str(meta['group_id'])!=str(group):
+            rejected+=1;continue
         validated_images.append(image)
     images=validated_images
     if rejected:payload['_rejected_image_annotations']=payload.get('_rejected_image_annotations',0)+rejected
@@ -258,6 +271,7 @@ def update_states(cfg,group,payload,args,db=None):
         meta=available[image['reference']]
         if meta.get('event_key'):archive.record_visual(cfg,meta['event_key'],image['description'],meta.get('media_key',''))
         if meta.get('media_key'):emoticons.learn(cfg['context_dir'],meta['group_id'],meta.get('url',''),image['description'],meta['media_key'],original_key=meta.get('original_key'),tags=image.get('tags',[]),is_sticker=image.get('is_sticker',bool(meta.get('sticker_hint'))))
+        payload.setdefault('_saved_image_annotations',[]).append({**image,'event_key':meta.get('event_key'),'media_key':meta.get('media_key'),'animated_first_frame':bool(meta.get('animated_first_frame'))})
     if memory_store.enabled(cfg['context_dir']) or isinstance(state,dict) or any(isinstance(item['state'],dict) for item in members):
         store=memory_store.MemoryStore(cfg['context_dir'])
         try:store.state_updates(group,state,[(str(item['user_id']),item['state'],item.get('scope','person')) for item in members])

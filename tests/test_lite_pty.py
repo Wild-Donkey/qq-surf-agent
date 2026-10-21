@@ -9,7 +9,7 @@ class LitePTYTest(unittest.TestCase):
  def test_typing_does_not_block_logs_and_completion(self):
   if not (root/"runtime/deps/prompt_toolkit").exists():self.skipTest("optional lite dependency unavailable")
   with tempfile.TemporaryDirectory() as tmp:
-   p=Path(tmp);(p/'runtime/logs').mkdir(parents=True);log=p/'runtime/logs/qq-helper.log';log.write_text('');(p/'workflow.json').write_text(json.dumps({'groups':[{'id':1,'name':'测试群'}]}))
+   p=Path(tmp);(p/'runtime/logs').mkdir(parents=True);log=p/'runtime/logs/qq-helper.log';log.write_text(''.join('10-21 16:00:00 [info] bot | 接收 <- 群聊 [测试群(1)] [测试人(2)] history-'+str(n)+'\n' for n in range(120)));(p/'workflow.json').write_text(json.dumps({'groups':[{'id':1,'name':'测试群'}]}))
    code="import sys;from pathlib import Path;import lite_console;lite_console.ROOT=Path(sys.argv[1]);lite_console.run(controller=type('C',(),{'execute':lambda self,line:'executed:'+line})())"
    master,slave=pty.openpty();env=dict(os.environ,TERM='xterm-256color',PROMPT_TOOLKIT_NO_CPR='1',SURF_LOG_DIR='/tmp/surf-console-test-logs')
    child=subprocess.Popen([python,'-u','-c',code,tmp],stdin=slave,stdout=slave,stderr=slave,env=env,cwd=root);os.close(slave);data=b''
@@ -25,10 +25,22 @@ class LitePTYTest(unittest.TestCase):
     with log.open('a') as f:f.write('10-21 16:00:01 [info] bot | 接收 <- 群聊 [测试群(1)] [测试人(2)] realtime-while-typing\n')
     read_for(1)
     assert b'realtime-while-typing' in data,repr(data[-5000:])
+    os.write(master,b'\x1b[5~');start=len(data);read_for(.5)
+    assert '历史' in data[start:].decode(errors='replace'),'PageUp did not enter history'
+    with log.open('a') as f:f.write('10-21 16:00:02 [info] bot | 接收 <- 群聊 [测试群(1)] [测试人(2)] held-until-live\n')
+    start=len(data);read_for(.6)
+    assert b'held-until-live' not in data[start:],'new message pulled history to bottom'
+    os.write(master,b'\x1b[F');read_for(.5)
+    assert b'eld-until-live' in data,repr(data[-4000:])
+    # SGR wheel events over blank space must also scroll both directions.
+    os.write(master,b'\x1b[<64;75;5M');start=len(data);read_for(.5)
+    assert '历史' in data[start:].decode(errors='replace'),'wheel up failed'
+    os.write(master,b'\x1b[<65;75;5M');start=len(data);read_for(.5)
+    assert '实时' in data[start:].decode(errors='replace'),'wheel down failed'
     os.write(master,b'\t');read_for(.3);os.write(master,b'\r');read_for(.8)
     assert 'executed:/use 测试群' in data.decode(errors='replace'),'completion/input not preserved'
-    os.write(master,b'/quit\r');child.wait(timeout=3)
-    print('PTY verified: live logs during typing, group-name completion, command buffer preserved, normal exit')
+    os.write(master,b'/quit\r');read_for(1);child.wait(timeout=3)
+    print('PTY verified: live logs during typing, group-name completion, command buffer preserved, PageUp/End, bidirectional SGR wheel, anchored history, normal exit')
    finally:
     if child.poll() is None:child.kill();child.wait()
     os.close(master)
