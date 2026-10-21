@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Two live log panes and a non-blocking local operations prompt (stdlib only)."""
+"""One live log stream and a non-blocking local operations prompt (stdlib only)."""
 import fcntl
 import argparse,collections,concurrent.futures,json,os,queue,shlex,signal,subprocess,sys,time,unicodedata
 try:import curses
@@ -9,7 +9,7 @@ import agent,qq,workflow,operator_control,service_log,completion,chat_view,avata
 ROOT=Path(__file__).resolve().parent
 HELP='''/groups  /use 群名或群号  /say 内容（或直接输入）  /takeover  /resume
 /paste  /worker prompt  /jobs  /status  /bot start|restart|stop  /helper status|start|wrap|stop
-/help  /quit  · Tab补全命令/群名，F6切换日志窗，↑/↓或滚轮滚动，PgUp/PgDn翻页，End回到实时；退出界面不停止服务'''
+/help  /quit  · Tab补全命令/群名，↑/↓或滚轮滚动，PgUp/PgDn翻页，End回到实时；退出界面不停止服务'''
 
 def alive(path):
  try:pid=int(path.read_text());os.kill(pid,0);return pid
@@ -140,15 +140,13 @@ def run(screen):
  sys.stdout.write('\x1b[?1000h\x1b[?1006h');sys.stdout.flush()
  mouse_reader=terminal_mouse.Reader()
  avatars=avatar_palette.AvatarPalette();styles=chat_view.Styles(avatars)
- controller=Controller();buffers=[collections.deque(maxlen=2000),collections.deque(maxlen=2000)];views=[log_scroll.Viewport(True),log_scroll.Viewport()];focus=0
- tails=[Tail(ROOT/'runtime/logs/qq-helper.log'),Tail(ROOT/'runtime/logs/surf-bot.log')]
- # Include supervisor output alongside detailed bot events.
- fallback=Tail(ROOT/'runtime/workflow.log')
- if tails[1].path.exists():fallback.read()  # Don't place stale startup failures after current structured logs.
+ from terminal_feed import Feed
+ controller=Controller();buffers=[collections.deque(maxlen=2000)];views=[log_scroll.Viewport(True)];focus=0
+ feed=Feed(ROOT)
  outputs=queue.Queue();pool=concurrent.futures.ThreadPoolExecutor(max_workers=1)
  text='';cursor=0;history=[];history_index=0;completer=completion.Completer();groups=[];groups_checked=0
- buffers[1].extend(HELP.splitlines())
- if not tails[0].path.exists():buffers[0].append('QQ Helper 尚未封装日志；/helper wrap 接管当前实例，或 /helper start 启动。')
+ buffers[0].extend(HELP.splitlines())
+ if not feed.tails[0][1].path.exists():buffers[0].append('QQ Helper 尚未封装日志；/helper wrap 接管当前实例，或 /helper start 启动。')
  def task(line):
   try:result=controller.execute(line)
   except Exception as exc:result='操作失败：'+service_log.clean(str(exc))
@@ -158,11 +156,9 @@ def run(screen):
   except curses.error:pass
  try:
   while True:
-   for i,tail in enumerate(tails):
-    fresh=tail.read();views[i].arrived(fresh);buffers[i].extend(fresh)
-   fresh=fallback.read();views[1].arrived(fresh);buffers[1].extend(fresh)
+   fresh=feed.read();views[0].arrived(fresh);buffers[0].extend(fresh)
    while not outputs.empty():
-    fresh=outputs.get().splitlines();views[1].arrived(fresh);buffers[1].extend(fresh)
+    fresh=outputs.get().splitlines();views[0].arrived(fresh);buffers[0].extend(fresh)
    if time.monotonic()-groups_checked>3:
     try:groups=json.loads((ROOT/'workflow.json').read_text()).get('groups',[])
     except (OSError,ValueError):pass
@@ -171,21 +167,18 @@ def run(screen):
    if height<12 or width<45:
     put(0,0,'请把终端放大至至少45列、12行。Ctrl-C退出',width-1)
    else:
-    pane=height-9;left=(width-1)//2
-    for i,title in enumerate(('QQ Helper','surf bot / 操作结果')):
-     x=0 if i==0 else left+1;columns=left if i==0 else width-left-2
-     visible=views[i].visible(buffers[i],columns,pane)
-     put(0,x,('▶ ' if i==focus else '  ')+title+(' [历史 ↑'+str(views[i].offset)+']' if views[i].offset else ' [实时]'),columns)
-     for n,(line,group,user) in enumerate(visible):
-      attr=styles.attr(chat_view.Row(line,group,user)) if i==0 else 0
-      padding=max(0,columns-display_width(line))
-      put(1+n,x,line+' '*padding,columns,attr)
-    for y in range(pane+1):put(y,left,'│',1)
+    pane=height-9;columns=width-1
+    visible=views[0].visible(buffers[0],columns,pane)
+    put(0,0,'QQ / 应用 / 理解'+(' [历史 ↑'+str(views[0].offset)+']' if views[0].offset else ' [实时]'),columns)
+    for n,(line,group,user) in enumerate(visible):
+     attr=styles.attr(chat_view.Row(line,group,user)) if group else 0
+     padding=max(0,columns-display_width(line))
+     put(1+n,0,line+' '*padding,columns,attr)
     put(height-7,0,'当前群 '+str(controller.group or '未选择')+' · 手动发送标记【人工接管】',width-1)
     choices=completer.items if completer.last==(text,cursor) else completion.candidates(text[:cursor],groups)
     index=max(0,completer.index) if completer.last==(text,cursor) else 0
     for row,item in enumerate(choices[index:index+3]):put(height-6+row,0,('→ ' if row==0 else '  ')+item[0]+' · '+item[1],width-1)
-    put(height-3,0,'Tab补全 · F6切窗 · ↑↓/滚轮滚动 · PgUp/PgDn翻页 · End实时 · /help · /quit',width-1)
+    put(height-3,0,'Tab补全 · ↑↓/滚轮滚动 · PgUp/PgDn翻页 · End实时 · /help · /quit',width-1)
     start=max(0,cursor-(width-6)//2)
     put(height-2,0,'> '+text[start:],width-1)
     try:screen.move(height-2,min(width-2,2+display_width(text[start:cursor])))
@@ -195,7 +188,7 @@ def run(screen):
    if key is None:continue
    if isinstance(key,terminal_mouse.Mouse):
     if 0<=key.y<height-8 and 0<=key.x<width:
-     focus=0 if key.x<(width-1)//2 else 1
+     focus=0
      if key.delta:views[focus].scroll(key.delta)
     continue
    if key!='\t':completer.reset()
@@ -203,9 +196,9 @@ def run(screen):
     line=text.strip();text='';cursor=0
     if line in ('/quit','/exit'):break
     if line:
-     history.append(line);history_index=len(history);views[1].arrived(['> '+service_log.clean(line)]);buffers[1].append('> '+service_log.clean(line));pool.submit(task,line)
+     history.append(line);history_index=len(history);views[0].arrived(['> '+service_log.clean(line)]);buffers[0].append('> '+service_log.clean(line));pool.submit(task,line)
    elif key=='\t':text,cursor=completer.tab(text,cursor,groups)
-   elif key==curses.KEY_F6:focus=1-focus
+   elif key==curses.KEY_F6:focus=0
    elif key==curses.KEY_UP:views[focus].scroll(1)
    elif key==curses.KEY_DOWN:views[focus].scroll(-1)
    elif key==curses.KEY_PPAGE:views[focus].scroll(max(1,height-10))
@@ -215,7 +208,7 @@ def run(screen):
     try:
      _,mx,my,_,buttons=curses.getmouse()
      if my<height-8:
-      focus=0 if mx<(width-1)//2 else 1
+      focus=0
       if buttons & getattr(curses,'BUTTON4_PRESSED',0):views[focus].scroll(3)
       elif buttons & getattr(curses,'BUTTON5_PRESSED',0):views[focus].scroll(-3)
     except curses.error:pass
@@ -251,7 +244,7 @@ def lite_default(args):
 
 
 def main():
- p=argparse.ArgumentParser(description='QQ surf terminal console');mode=p.add_mutually_exclusive_group();mode.add_argument('--full',action='store_true',help='使用双窗彩色完整界面');mode.add_argument('--lite',action='store_true',help='逐行纯文本模式，只显示简化聊天，不加载颜色和bot日志');p.add_argument('--command',help='执行一条控制台命令后退出');p.add_argument('--helper-wrap',action='store_true',help='将当前QQ实例重启为持久日志启动');args=p.parse_args()
+ p=argparse.ArgumentParser(description='QQ surf terminal console');mode=p.add_mutually_exclusive_group();mode.add_argument('--full',action='store_true',help='使用单一信息流彩色完整界面');mode.add_argument('--lite',action='store_true',help='单一信息流朴素模式，显示QQ消息、应用日志和局面理解');p.add_argument('--command',help='执行一条控制台命令后退出');p.add_argument('--helper-wrap',action='store_true',help='将当前QQ实例重启为持久日志启动');args=p.parse_args()
  if args.command:print(Controller().execute(args.command));return
  with console_lock():
   if args.helper_wrap:print(Controller().execute('/helper wrap'))

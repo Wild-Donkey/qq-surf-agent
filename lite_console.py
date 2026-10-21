@@ -1,4 +1,4 @@
-"""Chat-only terminal with native scrollback and concurrent prompt redraw."""
+"""Plain single-stream terminal with concurrent prompt redraw."""
 import collections,json,sys,threading,time,os
 from pathlib import Path
 import chat_view,completion,service_log
@@ -54,23 +54,24 @@ def run(controller=None,input_fn=None,output=None):
  return _run(controller,input_fn,output)
 
 def _run(controller=None,input_fn=None,output=None,managed_prompt=False):
- from console import Controller,Tail
+ from console import Controller
+ from terminal_feed import Feed
  controller=controller or Controller();input_fn=input_fn or input;output=output or sys.stdout
  try:
   if managed_prompt:raise ImportError
   import readline
   old_completer=readline.get_completer();old_delims=readline.get_completer_delims();setup_completion(readline)
  except ImportError:readline=None
- tail=Tail(ROOT/'runtime/logs/qq-helper.log');stop=threading.Event();printing=threading.Lock();reading=threading.Event()
+ tail=Feed(ROOT);stop=threading.Event();printing=threading.Lock();reading=threading.Event()
  def write(text):
   with printing:output.write(text+'\n');output.flush()
- initial=chat_lines(tail.read())
- write('Luna lite · 仅聊天 · /use 选择群 · /help 帮助 · /quit 退出（后台继续运行）')
+ initial=[chat_view.parse(line).text for line in tail.read()]
+ write('Luna lite · QQ / 应用 / 理解 · /use 选择群 · /help 帮助 · /quit 退出（后台继续运行）')
  for line in initial[-40:]:write(line)
  def follow():
   pending=collections.deque(maxlen=2000)
   while not stop.wait(.25):
-   try:pending.extend(chat_lines(tail.read()))
+   try:pending.extend(chat_view.parse(line).text for line in tail.read())
    except OSError as exc:
     service_log.event('console','chat log tail retry error='+type(exc).__name__)
     continue

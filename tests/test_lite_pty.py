@@ -23,7 +23,10 @@ class LitePTYTest(unittest.TestCase):
    try:
     read_for(1);os.write(master,b'/use ');read_for(.2)
     with log.open('a') as f:f.write('10-21 16:00:01 [info] bot | 接收 <- 群聊 [测试群(1)] [测试人(2)] realtime-while-typing\n')
+    notes={'summary':'窗口理解已经显示','images':[],'uncertainties':[]}
+    (p/'runtime/logs/surf-bot.log').write_text('10-21 16:00:01 worker understanding group=1 request_id=sample observations='+json.dumps(notes,ensure_ascii=False)+'\n')
     read_for(1)
+    assert '窗口理解已经显示' in data.decode(errors='replace'),'application understanding missing from lite stream'
     assert b'realtime-while-typing' in data,repr(data[-5000:])
     os.write(master,b'\x1b[5~');start=len(data);read_for(.5)
     assert '历史' in data[start:].decode(errors='replace'),'PageUp did not enter history'

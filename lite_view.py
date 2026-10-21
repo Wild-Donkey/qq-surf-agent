@@ -26,9 +26,10 @@ def run(controller,root,completer):
  from prompt_toolkit.output import ColorDepth
  from prompt_toolkit.history import InMemoryHistory
  from prompt_toolkit.mouse_events import MouseEventType
- import lite_console,completion,service_log
- from console import Controller,Tail
- controller=controller or Controller();history=History();tail=Tail(root/'runtime/logs/qq-helper.log');bindings=KeyBindings()
+ import lite_console,completion,service_log,chat_view
+ from console import Controller
+ from terminal_feed import Feed
+ controller=controller or Controller();history=History();tail=Feed(root);bindings=KeyBindings()
  def scroll(amount):history.scroll(amount);app.invalidate()
  def mouse(event):
   if event.event_type==MouseEventType.SCROLL_UP:scroll(3);return None
@@ -84,11 +85,11 @@ def run(controller,root,completer):
  async def follow():
   while True:
    await asyncio.sleep(.25)
-   try:lines=lite_console.chat_lines(tail.read())
+   try:lines=[chat_view.parse(line).text for line in tail.read()]
    except OSError as exc:service_log.event('console','lite tail retry error='+type(exc).__name__);continue
    if lines:history.append(lines);app.invalidate()
  def start():
-  history.append(lite_console.chat_lines(tail.read())[-2000:]);app.create_background_task(follow())
+  history.append([chat_view.parse(line).text for line in tail.read()][-2000:]);app.create_background_task(follow())
  app=Application(layout=Layout(HSplit([chat,status_bar,entry]),focused_element=entry),key_bindings=bindings,
                  full_screen=True,mouse_support=True,color_depth=ColorDepth.DEPTH_1_BIT)
  try:app.run(pre_run=start)

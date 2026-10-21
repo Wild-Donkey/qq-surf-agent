@@ -1,8 +1,8 @@
 # 终端控制台
 
-双击 `Surf Console.command`，或在项目目录运行 `python3 console.py`，默认启动 Lite。需要下述双窗界面时使用 `python3 console.py --full`。Lite 的并行输入组件安装到项目本地：`python3 -m pip install --target runtime/deps -r requirements-lite.txt`。完整界面仍使用标准库 curses。
+双击 `Surf Console.command`，或在项目目录运行 `python3 console.py`，默认启动 Lite。需要彩色完整界面时使用 `python3 console.py --full`。Lite 的并行输入组件安装到项目本地：`python3 -m pip install --target runtime/deps -r requirements-lite.txt`。完整界面仍使用标准库 curses。
 
-左窗显示 QQ Helper 原始输出，右窗显示 surf bot 收件、worker 决策、发送回执和命令结果，底部始终可以输入。Tab 补全命令、服务子命令、群名和群号；首次显示多个候选，再按 Tab 循环选中。F6 或鼠标点击选择日志窗，↑/↓ 按显示行滚动，鼠标滚轮滚动，PgUp/PgDn 翻页，End 回到实时；左右键编辑输入，Ctrl-P/Ctrl-N 找回本次输入历史。Ctrl-U 清空输入。`/quit` 或 Ctrl-C 仅退出界面，两个后台服务继续运行。
+QQ Helper 消息、应用处理日志、局面理解、发送回执和命令结果按时间混排在同一信息流，底部始终可以输入。Tab 补全命令、服务子命令、群名和群号；首次显示多个候选，再按 Tab 循环选中。↑/↓ 按显示行滚动，鼠标滚轮滚动，PgUp/PgDn 翻页，End 回到实时；左右键编辑输入，Ctrl-P/Ctrl-N 找回本次输入历史。Ctrl-U 清空输入。`/quit` 或 Ctrl-C 仅退出界面，两个后台服务继续运行。
 
 ## 常用操作
 
@@ -43,7 +43,7 @@ QQ Helper 封装运行在独立后台进程，持有单实例锁；控制台不�
 - `runtime/logs/surf-bot.log`：收件、worker 开始/决策、人工接管、prompt 队列、投递回执。
 - `runtime/logs/console.log`：控制命令的执行结果。
 - 每路主日志最多约 5 MB，另保留 5 份轮转文件。常见 token/key 和 URL 查询参数会脱敏；日志目录仅本机用户可访问。QQ 输出可能包含聊天内容，请按聊天记录保管。
-- 原有 `runtime/workflow.log` 仍保留并在右窗显示。
+- 原有 `runtime/workflow.log` 仍保留并汇入同一信息流。
 - `operator_prompts` 数据表保留本机 worker 指令及处理状态；`runtime/console-state.json` 保留选中的群。这些都被 gitignore 排除。
 
 也可执行单条命令，便于脚本调用：
@@ -56,21 +56,21 @@ python3 console.py --command '/worker 观察最新话题，不需要强行回复
 
 ## 聊天日志和截图
 
-左侧将 Helper 原始输出整理成聊天记录：时间只显示一次，群名和人名最多5个字符，不显示身份号码。群用不同底色、人用头像主色派生的文字颜色；本机缓存头像颜色，后台读取不阻塞输入，失败时使用稳定备用色。256色终端下文字与底色的对比度至少4.5:1。原始日志文件保持完整。
+信息流将 Helper 原始输出整理成聊天记录：时间只显示一次，群名和人名最多5个字符，不显示身份号码。群用不同底色、人用头像主色派生的文字颜色；本机缓存头像颜色，后台读取不阻塞输入，失败时使用稳定备用色。256色终端下文字与底色的对比度至少4.5:1。原始日志文件保持完整。
 
 先把图片复制到剪贴板，再在控制台输入 `/paste`，会以 `【人工接管】 截图` 加图片发到当前选择的群。Tab 也能补全 `/paste`。只读取图片，不执行剪贴板文字；空剪贴板或不支持的格式不会发送。图片上限15MB、1600万像素，发送结果不确定时不重试。截图会进入本机 worker 的图片上下文。`runtime/outbox/` 保存发送文件，`context/ui-colors.sqlite3` 保存头像配色，均被gitignore排除。
 
 ## Lite 模式
 
-终端不方便使用全屏界面时，运行 `python3 console.py --lite`，或双击 `Surf Lite.command`。Lite 使用单列聊天视图加输入栏，不设置群色/人色、不读取头像、不显示右侧 bot 日志或 Helper 的系统杂项。滚动由应用管理，支持鼠标双向滚轮、↑↓、PageUp/PageDown，End回实时；读历史时新消息不抢阅读位置。
+终端不方便使用全屏界面时，运行 `python3 console.py --lite`，或双击 `Surf Lite.command`。Lite 使用单列信息流加输入栏，显示同样的 QQ 消息、应用日志与局面理解；不设置群色/人色、不读取头像。滚动由应用管理，支持鼠标双向滚轮、↑↓、PageUp/PageDown，End回实时；读历史时新消息不抢阅读位置。
 
 仍可输入 `/use`、`/say`、`/paste`、`/worker`、`/pause` 等命令，命令结果会就地显示。正常交互终端使用 prompt_toolkit 保留输入并原地刷新：打字期间聊天仍会更新，Tab 补全不受影响。启动时清除遗留终端状态，再由Lite接管聊天区域的滚动；不设置群色、人色。简单管道或 TERM=dumb 环境保留逐行输入模式。`/help` 列出可用命令，`/quit` 只退出界面。
 
-标准界面向上查看历史时，新消息不会把当前阅读位置推走；右上/左上的“历史”状态显示距离实时的行数。按 End 恢复跟随最新消息。每个日志窗独立保存滚动位置，长消息也能逐行查看。Lite 有独立的单列历史滚动，不依赖终端原生回滚。
+标准界面向上查看历史时，新消息不会把当前阅读位置推走；顶部的“历史”状态显示距离实时的行数。按 End 恢复跟随最新消息。信息流保存滚动位置，长消息也能逐行查看。Lite 有独立的单列历史滚动，不依赖终端原生回滚。
 
 macOS 旧版 curses 缺少第5按钮常量时，控制台直接解析 SGR 鼠标事件以支持双向滚轮；不把鼠标协议字节插入命令输入。关闭控制台会恢复终端鼠标模式。
 
-控制台默认以 Lite 启动。需要完整双窗时使用 `python3 console.py --full`。交互控制台设有单实例锁；重复启动会提示复用已有窗口，不影响QQ Helper和bot服务。单条 `--command` 操作不受此限制。
+控制台默认以 Lite 启动。需要彩色完整界面时使用 `python3 console.py --full`。交互控制台设有单实例锁；重复启动会提示复用已有窗口，不影响QQ Helper和bot服务。单条 `--command` 操作不受此限制。
 
 ### 结构化记忆更新
 
@@ -115,3 +115,5 @@ worker的每条未读记录包含实际发言人ID、称呼、消息ID、event_k
 应用将其保存到 `context/worker-understandings.sqlite3` 和 `context/groups/<群号>/requests/<request_id>.md`，并写入 `runtime/logs/surf-bot.log`，不会发送到QQ。下一轮注入同群最近的有限摘要，完整观察仍落盘。图片说明只接受真正附过的引用，可同时更新已有图片归档和表情库。与人物状态校验独立，缺少理解或校验失败会记录 missing/rejected，模型调用失败标 failed；不伪造理解。公开 text/reply_parts 与内部理解分开，只有明确要求解释或总结时才公开说明。
 
 群聊 worker 的发言格式为 `代号：内容`。全局代号保存在 context/identities.sqlite3，初始取账号用户名（5个汉字/10个字母的显示宽度），同名自动区分。引用与历史统一使用代号；完整成员信息通过 get_member(alias) 查询，观察到稳定称呼后可带真实发言证据更新。
+
+每个窗口的内部理解以 `[理解][群名]` 展开显示局面摘要、图片理解和待确认事项，保留时间并与聊天混排；这些信息只显示在本机控制台，不向 QQ 发送。原始结构化记录仍完整保存在日志及 context 中。
