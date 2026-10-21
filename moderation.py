@@ -1,5 +1,6 @@
 """Application-owned mute handling with one bounded appeal per mute episode."""
 import json
+import hashlib
 import time
 from pathlib import Path
 import agent
@@ -306,7 +307,20 @@ def check_recovery(db,cfg,api,now=None):
         login=agent.onebot_call(api,'get_login_info')
         if str(login.get('user_id'))!=str(cfg['bot_id']):raise ValueError('wrong_bot')
         members=agent.onebot_call(api,'get_group_member_list',{'group_id':int(group)})
-        me=next(m for m in members if str(m.get('user_id'))==str(cfg['bot_id']))
+        me=next((m for m in members if str(m.get('user_id'))==str(cfg['bot_id'])),None)
+        if me is None:
+            joined=agent.onebot_call(api,'get_group_list')
+            if any(str(g.get('group_id'))==group for g in joined):
+                raise ValueError('bot_member_list_incomplete')
+            # Absence from both lists is a terminal membership change, not an ASR/model failure.
+            with db:
+                changed=db.execute("UPDATE bot_mutes SET until_time=0,appeal_status='cancelled',return_status='left_group',return_delivery=NULL WHERE group_id=? AND event_time=?",(group,row['event_time'])).rowcount
+                if changed:
+                    db.execute("UPDATE deliveries SET status='blocked_left_group',updated=? WHERE target_group=? AND status='approved'",(now,group))
+                    fingerprint=hashlib.sha256(('mute_status_check_failed:'+group).encode()).hexdigest()
+                    db.execute("UPDATE alerts SET status='resolved' WHERE fingerprint=?",(fingerprint,))
+            if changed:alerts.record(db,'bot_left_group','bot 已离开群 '+group+'，停止禁言检查和申诉。',scope=group,now=now)
+            return
         if 'shut_up_timestamp' not in me:raise ValueError('missing_mute_status')
         until=float(me['shut_up_timestamp'])
         with db:

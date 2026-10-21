@@ -50,3 +50,21 @@ class PrivateTests(unittest.TestCase):
   def api(a,b,c=None):return {'user_id':99} if b=='get_login_info' else [{'user_id':99,'shut_up_timestamp':self.now+100000}]
   with patch('moderation.agent.onebot_call',side_effect=api):moderation.check_recovery(self.db,self.cfg,{},self.now+1800)
   self.assertEqual(self.db.execute('select count(*) from deliveries').fetchone()[0],0)
+
+ def test_departed_group_stops_polling_without_return(self):
+  moderation.ingest(self.db,{'post_type':'notice','notice_type':'group_ban','sub_type':'ban','group_id':1,'user_id':99,'operator_id':8,'time':self.now,'duration':500},self.cfg,self.now)
+  with self.db:self.db.execute('UPDATE bot_mutes SET next_check=0')
+  def api(a,b,c=None):return {'user_id':99} if b=='get_login_info' else []
+  with patch('moderation.agent.onebot_call',side_effect=api) as mocked:
+   moderation.check_recovery(self.db,self.cfg,{},self.now+1)
+   moderation.check_recovery(self.db,self.cfg,{},self.now+4000)
+   self.assertEqual(mocked.call_count,3)
+  row=self.db.execute('SELECT return_status,appeal_status,until_time FROM bot_mutes').fetchone()
+  self.assertEqual(tuple(row),('left_group','cancelled',0))
+  self.assertEqual(self.db.execute('SELECT count(*) FROM deliveries').fetchone()[0],0)
+ def test_incomplete_member_list_does_not_claim_departure(self):
+  moderation.ingest(self.db,{'post_type':'notice','notice_type':'group_ban','sub_type':'ban','group_id':1,'user_id':99,'operator_id':8,'time':self.now,'duration':500},self.cfg,self.now)
+  with self.db:self.db.execute('UPDATE bot_mutes SET next_check=0')
+  def api(a,b,c=None):return {'get_login_info':{'user_id':99},'get_group_member_list':[],'get_group_list':[{'group_id':1}]}[b]
+  with patch('moderation.agent.onebot_call',side_effect=api):moderation.check_recovery(self.db,self.cfg,{},self.now+1)
+  self.assertNotEqual(self.db.execute('SELECT return_status FROM bot_mutes').fetchone()[0],'left_group')

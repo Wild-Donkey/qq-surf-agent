@@ -29,7 +29,7 @@ def connect(path):
 def enqueue(db,cfg,now):
     if not cfg.get('diagnostics',{}).get('enabled'):return
     interval=cfg['diagnostics'].get('cooldown_seconds',3600)
-    for alert in db.execute("SELECT * FROM alerts WHERE last_seen>? AND code NOT IN ('usage_report','bot_muted','group_invite_accepted') AND code NOT LIKE 'diagnostic_%'",(now-300,)).fetchall():
+    for alert in db.execute("SELECT * FROM alerts WHERE last_seen>? AND status!='resolved' AND code NOT IN ('usage_report','bot_muted','group_invite_accepted','bot_left_group') AND code NOT LIKE 'diagnostic_%'",(now-300,)).fetchall():
         last=db.execute('SELECT created FROM diagnostic_jobs WHERE fingerprint=? ORDER BY created DESC LIMIT 1',(alert['fingerprint'],)).fetchone()
         if last and now-last['created']<interval:continue
         with db:db.execute("INSERT OR IGNORE INTO diagnostic_jobs(alert_id,fingerprint,created,status) VALUES (?,?,?,'pending')",(alert['id'],alert['fingerprint'],now))
