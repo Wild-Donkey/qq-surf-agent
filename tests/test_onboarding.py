@@ -42,3 +42,18 @@ class OnboardingTests(unittest.TestCase):
         self.db.execute('INSERT INTO group_activity VALUES (?,?)',('1',self.now-15*86400));self.db.commit()
         with patch('social.load_model',return_value={'enabled':True,'api_key':'test'}):onboarding.greet(self.db,self.cfg,self.now)
         self.assertEqual(self.db.execute('SELECT count(*) FROM deliveries').fetchone()[0],0)
+
+    def test_empty_scan_later_history_allows_greeting(self):
+        self.db.execute("INSERT INTO group_onboarding(group_id,created,status,new_group) VALUES ('1',?,'done',1)",(self.now,));self.db.commit()
+        event={'group_id':1,'user_id':7,'message_id':10,'time':self.now,'message':[{'type':'text','data':{'text':'欢迎'}}]}
+        with patch('agent.onebot_call',return_value={'messages':[event]}):onboarding.refresh_greeting_activity(self.db,self.cfg,{},self.now)
+        with patch('social.load_model',return_value={'enabled':True,'api_key':'test','model':'chosen'}):
+            onboarding.greet(self.db,self.cfg,self.now)
+            with self.db:self.db.execute("UPDATE deliveries SET status='expired'")
+            onboarding.greet(self.db,self.cfg,self.now+10)
+            onboarding.greet(self.db,self.cfg,self.now+11)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM deliveries').fetchone()[0],1)
+        self.assertEqual(self.db.execute('SELECT status FROM deliveries').fetchone()[0],'approved')
+        with self.db:self.db.execute("UPDATE deliveries SET status='uncertain'")
+        with patch('social.load_model',return_value={'enabled':True,'api_key':'test'}):onboarding.greet(self.db,self.cfg,self.now+12)
+        self.assertEqual(self.db.execute('SELECT status FROM deliveries').fetchone()[0],'uncertain')

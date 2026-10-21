@@ -96,6 +96,7 @@ def bootstrap(db,cfg,api,now):
                 event.update(post_type='message',message_type='group',group_id=gid)
                 memory.observe(event,cfg['bot_id']);latest=max(latest,stamp)
                 text=' '.join(str(p.get('data',{}).get('text','')) for p in event.get('message',[]) if isinstance(p,dict) and p.get('type')=='text')
+                with db:participants.observe(db,event,cfg,text,now)
                 if text.strip():samples.append(excerpt(text,160))
             if latest:
                 with db:db.execute('INSERT INTO group_activity VALUES (?,?) ON CONFLICT(group_id) DO UPDATE SET last_member_message=max(last_member_message,excluded.last_member_message)',(gid,latest))
@@ -132,11 +133,40 @@ def bootstrap(db,cfg,api,now):
     finally:memory.close()
 
 
+def refresh_greeting_activity(db,cfg,api,now):
+    # A group discovered before its first message must not wait forever for a callback.
+    rows=db.execute("SELECT group_id FROM group_onboarding WHERE new_group=1 AND status='done' AND intro_candidate IS NULL AND retry_after<=? ORDER BY created LIMIT 3",(now,)).fetchall()
+    for row in rows:
+        gid=row['group_id']
+        if gid not in {str(g['id']) for g in cfg['groups'] if g.get('enabled',True)}:continue
+        with db:db.execute('UPDATE group_onboarding SET retry_after=? WHERE group_id=?',(now+60,gid))
+        try:
+            history=agent.onebot_call(api,'get_group_msg_history',{'group_id':int(gid),'count':20,'disable_get_url':True})
+            import workflow
+            for event in history.get('messages',[]):
+                if str(event.get('user_id'))==str(cfg['bot_id']):continue
+                event=dict(event,post_type='message',message_type='group',group_id=gid)
+                text,_=workflow.normalize(event)
+                stamp=float(event.get('time',0))
+                if not 0<=now-stamp<=cfg.get('inactive_group_days',14)*86400:continue
+                with db:
+                    participants.observe(db,event,cfg,text,now)
+                    db.execute('INSERT INTO group_activity VALUES (?,?) ON CONFLICT(group_id) DO UPDATE SET last_member_message=max(last_member_message,excluded.last_member_message)',(gid,stamp))
+        except Exception as exc:
+            alerts.record(db,'greeting_history_failed','入群自我介绍等待补读近期消息。',scope=gid,details={'error':type(exc).__name__})
+
+
 def greet(db,cfg,now):
+    with db:
+        db.execute("""UPDATE group_onboarding SET intro_candidate=NULL WHERE new_group=1 AND intro_candidate IS NOT NULL
+          AND EXISTS (SELECT 1 FROM deliveries d WHERE d.candidate_id=group_onboarding.intro_candidate AND d.status IN ('expired','superseded','blocked_muted'))
+          AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.candidate_id=group_onboarding.intro_candidate AND d.status IN ('sent','uncertain','already_seen','approved'))""")
     model=social.load_model(cfg)
     if not model.get('enabled') or not social.api_key(model):return
     for row in db.execute("SELECT group_id FROM group_onboarding WHERE new_group=1 AND intro_candidate IS NULL AND status='done'").fetchall():
         gid=row['group_id']
+        import moderation
+        if moderation.is_muted(db,gid,now):continue
         active=db.execute('SELECT last_member_message FROM group_activity WHERE group_id=?',(gid,)).fetchone()
         if not active or not 0<=now-active[0]<=cfg.get('inactive_group_days',14)*86400:continue
         if not participants.humans_recent(db,gid,cfg,now):continue
@@ -145,6 +175,8 @@ def greet(db,cfg,now):
         with db:
             db.execute("INSERT OR IGNORE INTO candidates(fingerprint,source_group,text,images,created,status,kind) VALUES (?,?,?,'[]',?,'approved','reply')",(fp,gid,text,now))
             cid=db.execute('SELECT id FROM candidates WHERE fingerprint=?',(fp,)).fetchone()[0]
+            db.execute("UPDATE candidates SET created=?,status='approved' WHERE id=?",(now,cid))
+            db.execute("UPDATE deliveries SET status='approved',created=?,updated=? WHERE candidate_id=? AND target_group=? AND status IN ('expired','superseded','blocked_muted')",(now,now,cid,gid))
             db.execute("INSERT OR IGNORE INTO deliveries(candidate_id,target_group,fingerprint,status,created,updated) VALUES (?,?,?,'approved',?,?)",(cid,gid,fp,now,now))
             db.execute('UPDATE group_onboarding SET intro_candidate=? WHERE group_id=?',(cid,gid))
 
@@ -154,5 +186,6 @@ def tick(db,cfg,api,path,now=None):
     if not cfg.get('onboarding',{}).get('enabled'):return cfg
     cfg=discover(db,cfg,api,path,now)
     bootstrap(db,cfg,api,now)
+    refresh_greeting_activity(db,cfg,api,now)
     greet(db,cfg,now)
     return cfg
