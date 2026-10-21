@@ -33,7 +33,7 @@ class GroupIsolationTests(unittest.TestCase):
   job=self.db.execute("SELECT * FROM social_jobs WHERE target_group='1'").fetchone();memory=MarkdownMemory(self.tmp.name)
   payload,_=social.choose(self.db,self.cfg,memory,job);memory.close()
   self.assertEqual(payload['candidates'],[]);self.assertEqual(payload['forward_bundles'],[])
-  self.assertEqual(payload['current_message']['text'],'甲群问题')
+  self.assertEqual(payload['trigger_event']['text'],'甲群问题')
   self.assertNotIn('乙群独有的句子',json.dumps(payload,ensure_ascii=False))
  def test_foreign_batch_cannot_be_saved_as_local_episode(self):
   memory=MarkdownMemory(self.tmp.name)

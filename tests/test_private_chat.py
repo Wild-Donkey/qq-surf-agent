@@ -77,3 +77,13 @@ class PrivateTests(unittest.TestCase):
   self.assertEqual(model.call_count,2)
   sent=[c.args[2] for c in api.call_args_list if c.args[1]=='send_private_msg']
   self.assertEqual(sent[0]['user_id'],7)
+
+ def test_private_reaction_sequence_is_sent_without_required_text(self):
+  import emoticons
+  self.add(text='来个表情')
+  face=next(iter(emoticons.FACES));parts=[{'emoticon':{'kind':'face','id':face}},{'emoticon':{'kind':'face','id':face}}]
+  raw=json.dumps({'call':{'name':'finish_turn','arguments':{'action':'reply','reply_parts':parts,'quality':'natural'}}})
+  with patch('private_chat.agent.onebot_call',side_effect=self.call) as api,patch('private_chat.social.load_model',return_value={'enabled':True,'api_key':'fake'}),patch('private_chat.social.generate_text',return_value=(raw,{})):
+   private_chat.tick(self.db,self.cfg,{},self.now)
+  sent=[c.args[2] for c in api.call_args_list if c.args[1]=='send_private_msg']
+  self.assertEqual(len(sent),1);self.assertEqual([p['type'] for p in sent[0]['message']],['face','face'])

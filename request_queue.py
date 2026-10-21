@@ -61,7 +61,10 @@ def accepts(db,group,decision,requests):
  for key in ids:
   if not db.execute("SELECT 1 FROM user_requests WHERE event_key=? AND group_id=? AND status='pending'",(key,str(group))).fetchone():return []
   if allowed[key]['kind']=='forward' and outcome=='completed' and decision['action'] not in ('merged_forward','share_image'):return []
- if outcome in ('declined','needs_info') and (decision['action']!='reply' or not decision.get('text','').strip()):return []
+ parts=decision.get('reply_parts')
+ reply_text=decision.get('text','')
+ if not reply_text and isinstance(parts,list):reply_text=''.join(p.get('text','') for p in parts if isinstance(p,dict) and isinstance(p.get('text',''),str))
+ if outcome in ('declined','needs_info') and (decision['action']!='reply' or not reply_text.strip()):return []
  return ids
 
 def bind(db,group,ids,decision,delivery,now):

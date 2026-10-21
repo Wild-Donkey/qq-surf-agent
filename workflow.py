@@ -56,6 +56,8 @@ def connect(path):
     CREATE TABLE IF NOT EXISTS operator_log(id INTEGER PRIMARY KEY,target TEXT,kind TEXT,
       fingerprint TEXT,status TEXT,message_id TEXT,created REAL);
     ''')
+    if 'reply_parts' not in {r[1] for r in db.execute('PRAGMA table_info(candidates)')}:
+        db.execute('ALTER TABLE candidates ADD COLUMN reply_parts TEXT')
     if 'kind' not in {r[1] for r in db.execute('PRAGMA table_info(candidates)')}:
         db.execute("ALTER TABLE candidates ADD COLUMN kind TEXT DEFAULT 'share'")
     if 'caption' not in {r[1] for r in db.execute('PRAGMA table_info(deliveries)')}:
@@ -304,7 +306,7 @@ def dispatch(db, cfg, api_cfg, now=None):
     if str(login.get('user_id')) != str(cfg['bot_id']):
         raise ValueError('bot 账号不一致')
     groups = configured_groups(cfg)
-    jobs = db.execute("""SELECT d.*,c.source_group,c.text,c.images,c.kind,c.emoticon FROM deliveries d
+    jobs = db.execute("""SELECT d.*,c.source_group,c.text,c.images,c.kind,c.emoticon,c.reply_parts FROM deliveries d
         JOIN candidates c ON c.id=d.candidate_id WHERE d.status='approved' AND c.status='approved'
         AND ((c.kind IN ('reply','merged_forward','moment_forward','image_share') AND d.created<=?) OR (c.kind NOT IN ('reply','merged_forward','moment_forward','image_share') AND d.created<=?))
         ORDER BY CASE WHEN c.kind='reply' THEN 0 ELSE 1 END,d.id LIMIT 50""", (now-cfg.get('reply_delay_seconds',0),now-cfg.get('hold_seconds',120))).fetchall()
@@ -381,6 +383,14 @@ def dispatch(db, cfg, api_cfg, now=None):
             parts.extend(emoticons.segments(cfg['context_dir'],target,emoticon))
         if cfg.get('send_images', True):
             parts.extend({'type':'image','data':{'file':image['url']}} for image in json.loads(job['images']))
+        reply_parts=json.loads(job['reply_parts']) if job['reply_parts'] else None
+        if reply_parts:
+            import replies
+            try:parts=replies.segments(cfg['context_dir'],target,reply_parts)
+            except (ValueError,OSError) as exc:
+                with db:db.execute("UPDATE deliveries SET status='failed',error=? WHERE id=?",('reply_parts_unavailable',job['id']))
+                continue
+            sticker_parts=[]
         try:
             if job['kind'] not in ('moment_forward','image_share') and not social.request_queue.is_bound(db,job['id']) and not job['deadline_reply'] and newer_context(db,target,job['context_watermark']):
                 with db:db.execute("UPDATE deliveries SET status='superseded',updated=? WHERE id=?",(time.time(),job['id']))
@@ -412,7 +422,7 @@ def dispatch(db, cfg, api_cfg, now=None):
             with db:
                 db.execute("UPDATE deliveries SET status='sent',message_id=?,updated=? WHERE id=?",(str(result['message_id']),now,job['id']))
                 db.execute('INSERT OR IGNORE INTO seen VALUES (?,?,?)',(target,job['fingerprint'],now))
-                record_text=text if text else '[大表情]'
+                record_text=(text+' '+emoticons.describe(parts)).strip() if reply_parts else (text if text else '[大表情]')
                 db.execute('INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?)',(target,'bot:'+str(result['message_id']),job['fingerprint'],'[自己] '+record_text,job['images'],now))
             # A text reply also carrying a big sticker: the sticker follows on its own bubble.
             # Its failure can't unsend the text, so it never fails the delivery.
@@ -428,6 +438,8 @@ def dispatch(db, cfg, api_cfg, now=None):
                 memory=MarkdownMemory(cfg.get('context_dir',ROOT/'context'))
                 try:memory.add_note('group',target,'自己最近发言：'+(text or '[大表情]'))
                 finally:memory.close()
+            if reply_parts:
+                for item in replies.selections(reply_parts):emoticons.mark_used(cfg['context_dir'],target,item)
             if emoticon:
                 emoticons.mark_used(cfg['context_dir'],target,emoticon)
             service_log.event('surf-bot','delivery sent id='+str(job['id'])+' group='+str(target)+' kind='+str(job['kind'])+' message_id='+str(result['message_id']))

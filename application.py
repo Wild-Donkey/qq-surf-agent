@@ -17,7 +17,7 @@ TOOLS=[
  {'name':'search_emoticons','description':'按语义描述/标签检索本群已收集表情，参数query，可选include_unreviewed查看尚未理解的图片'},
  {'name':'view_emoticon','description':'查看本群收集的某张表情，参数id；应用下一次调用附上真实图片'},
  {'name':'list_emoticons','description':'读取本群可用表情目录'},
- {'name':'reply','description':'回复当前群，text可为空；选收藏sticker时一张表情就是完整回复，不必附文字'},
+ {'name':'reply','description':'回复当前群：文字text；单表情text为空加emoticon；组合reply_parts:[{text},{emoticon}]按序发送。不回复选wait'},
  {'name':'share','description':'分享给定 candidate_id，参数 candidate_id,text'},
  {'name':'share_image','description':'把本群已理解的单张图直接发往匹配的活跃群，仅参数image_id、image_destinations给定route_id、quality=natural；无解说文字'},
  {'name':'merged_forward','description':'合并转发一段节目：bundle_id、message_ids、quality=natural；搬本群节目到其他活跃群时再带 outgoing_moments.destination.route_id，省略route_id则搬入当前群'},
@@ -26,6 +26,7 @@ TOOLS=[
 ARGUMENTS={'web_search':{'query'},'read_webpage':{'url'},'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id'},'search_history':{'query'},'list_emoticons':set(),'search_emoticons':{'query','include_unreviewed'},'view_emoticon':{'id'},'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'share_image':{'image_id','route_id','quality'},'merged_forward':{'bundle_id','message_ids','quality','route_id'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id','bundle_id','message_ids','route_id','image_id','image_share'}}
 for _terminal in ('finish_turn','reply','share','forward','merged_forward','share_image'):
  ARGUMENTS[_terminal].update({'request_ids','request_outcome'})
+ARGUMENTS['reply'].add('reply_parts');ARGUMENTS['finish_turn'].add('reply_parts')
 READS={'web_search','read_webpage','get_memory_schema','update_states','read_context','get_member','search_history','list_emoticons','search_emoticons','view_emoticon'}
 def decode(raw):
  value=parse_json(raw,'worker_api')
@@ -67,13 +68,13 @@ def decision(call):
  if name=='finish_turn':
   if args.get('action') not in ('wait','reply','share','forward','merged_forward','share_image'):raise ValueError('invalid_finish_action')
   if not isinstance(args.get('text',''),str):raise ValueError('invalid_text')
-  return {'action':args['action'],'text':args.get('text','')[:1200],'image_share':args.get('image_share'),'image_id':args.get('image_id'),'request_ids':args.get('request_ids',[]),'request_outcome':args.get('request_outcome'),'route_id':args.get('route_id'),'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'message_id':str(args.get('message_id','')) if args.get('message_id') else None,'reason':str(args.get('reason',''))[:200],'state_updates':{k:args[k] for k in ('group_state','members','images') if k in args}}
+  return {'action':args['action'],'text':args.get('text','')[:1200],'reply_parts':args.get('reply_parts'),'image_share':args.get('image_share'),'image_id':args.get('image_id'),'request_ids':args.get('request_ids',[]),'request_outcome':args.get('request_outcome'),'route_id':args.get('route_id'),'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'message_id':str(args.get('message_id','')) if args.get('message_id') else None,'reason':str(args.get('reason',''))[:200],'state_updates':{k:args[k] for k in ('group_state','members','images') if k in args}}
  if name in READS:return {'action':'read','call':call,'text':''}
  if name=='forward':
   mid=str(args.get('message_id',''))
   if not mid:raise ValueError('forward_requires_message_id')
   return {'action':'forward','text':'','message_id':mid,'emoticon':None,'reason':''}
- return {'action':name,'text':args.get('text','')[:1200],'image_share':args.get('image_share'),'image_id':args.get('image_id'),'request_ids':args.get('request_ids',[]),'request_outcome':args.get('request_outcome'),'route_id':args.get('route_id'),'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'reason':str(args.get('reason',''))[:200]}
+ return {'action':name,'text':args.get('text','')[:1200],'reply_parts':args.get('reply_parts'),'image_share':args.get('image_share'),'image_id':args.get('image_id'),'request_ids':args.get('request_ids',[]),'request_outcome':args.get('request_outcome'),'route_id':args.get('route_id'),'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'reason':str(args.get('reason',''))[:200]}
 def read(db,cfg,target,payload,call):
  name=call['name'];args=call['arguments']
  if name in ('web_search','read_webpage'):
@@ -123,7 +124,14 @@ def with_web_sources(decision,payload):
   call=item.get('call',{});result=item.get('result',{})
   if call.get('name')=='read_webpage' and result.get('text') and result.get('url'):sources.insert(0,result['url'])
   elif call.get('name')=='web_search':sources.extend(row['url'] for row in result.get('results',[]) if row.get('url'))
- if sources and not any(url in decision.get('text','') for url in sources):decision['text']=decision.get('text','').rstrip()+'\n'+sources[0]
+ parts=decision.get('reply_parts')
+ text=''.join(p.get('text','') for p in parts if isinstance(p,dict)) if isinstance(parts,list) else decision.get('text','')
+ if sources and not any(url in text for url in sources):
+  if parts:
+   last=next((p for p in reversed(parts) if isinstance(p,dict) and 'text' in p),None)
+   if last:last['text']+='\n'+sources[0]
+   else:parts.append({'text':sources[0]})
+  else:decision['text']=text.rstrip()+'\n'+sources[0]
  return decision
 
 def settle_memory(memory,group,batch,views):
