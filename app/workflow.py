@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 from app import agent
 from app import social
 from app import alerts
+from app import reviewer
 from app import usage_report
 from app import onboarding
 from app import operator_control
@@ -54,8 +55,10 @@ def connect(path):
     CREATE TABLE IF NOT EXISTS group_activity(group_id TEXT PRIMARY KEY,last_member_message REAL);
     CREATE TABLE IF NOT EXISTS operator_pause(group_id TEXT PRIMARY KEY,until_time REAL);
     CREATE TABLE IF NOT EXISTS operator_log(id INTEGER PRIMARY KEY,target TEXT,kind TEXT,
-      fingerprint TEXT,status TEXT,message_id TEXT,created REAL);
+      fingerprint TEXT,status TEXT,message_id TEXT,created REAL,error TEXT);
     ''')
+    if 'error' not in {r[1] for r in db.execute('PRAGMA table_info(operator_log)')}:
+        db.execute('ALTER TABLE operator_log ADD COLUMN error TEXT')
     if 'reply_parts' not in {r[1] for r in db.execute('PRAGMA table_info(candidates)')}:
         db.execute('ALTER TABLE candidates ADD COLUMN reply_parts TEXT')
     if 'kind' not in {r[1] for r in db.execute('PRAGMA table_info(candidates)')}:
@@ -74,6 +77,7 @@ def connect(path):
     social.ensure_schema(db)
     alerts.ensure_schema(db)
     participants.ensure_schema(db)
+    reviewer.ensure_schema(db)
     db.commit()
     return db
 
@@ -89,15 +93,66 @@ def group_is_active(db,group,cfg,now=None):
     return bool(row and 0<=now-row[0]<=cfg.get('inactive_group_days',14)*86400)
 
 
+def startup_backread(db,cfg,api_cfg,now=None):
+    """Recover messages arriving during a restart, without replaying old conversations.
+
+    Two gates bound what enters the understanding/context rebuild, scanned newest-first:
+      - time gate: only messages within ``backread_window_seconds`` (default 1 day)
+      - size gate: stop once cumulative normalized text reaches
+        ``backread_char_budget`` per group (default aligns with context_char_budget)
+    Those messages are archived for orientation/context. Only messages still inside the
+    live window (``backread_live_seconds``) enter the social pipeline; ingest() further
+    enforces max_event_age_seconds, so the bot never answers stale conversations.
+
+    NapCat answers get_group_msg_history with retcode=200（消息不存在）when it holds no
+    local message for a cold group: there is nothing locally recoverable, not an outage,
+    so it must not raise an owner alert. Genuine failures across groups are aggregated
+    into a single service-scoped alert instead of one identical private message per group.
+    """
+    now=time.time() if now is None else now
+    window=float(cfg.get('backread_window_seconds',86400))
+    budget=int(cfg.get('backread_char_budget',cfg.get('context_char_budget',12000)))
+    live=float(cfg.get('backread_live_seconds',180))
+    image_cost=int(cfg.get('backread_image_char_cost',80))
+    failures=[]
+    for group in configured_groups(cfg):
+        if not group_is_active(db,group,cfg,now):continue
+        try:
+            history=agent.onebot_call(api_cfg,'get_group_msg_history',{'group_id':int(group),'count':100,'disable_get_url':True})
+            used=0
+            messages=history.get('messages',[])
+            for raw in sorted(messages,key=lambda e:float(e.get('time',0)),reverse=True):
+                age=now-float(raw.get('time',now))
+                if age>window:break  # 已按时间倒序，再往后都是更旧的消息
+                event=dict(raw,post_type='message',message_type='group',group_id=group)
+                text,images=normalize(event,cfg)
+                cost=len(text)+image_cost*len(images)
+                if used+cost>budget:break
+                used+=cost
+                archive.record_event(cfg,event,now)
+                if age<=live:ingest(db,event,cfg,now)
+        except Exception as exc:
+            if getattr(exc,'retcode',None)==200:continue
+            failures.append({'group':str(group),'error':type(exc).__name__,'retcode':getattr(exc,'retcode',None)})
+    if failures:
+        kinds=sorted({('{} retcode={}'.format(f['error'],f['retcode']) if f['retcode'] is not None else f['error']) for f in failures})
+        alerts.record(db,'startup_history_failed',
+                      '重启时补读群消息失败（{} 个群：{}）。'.format(len(failures),'、'.join(kinds)),
+                      details={'groups':[f['group'] for f in failures][:30]})
+
+
 def newer_context(db,group,watermark):
     return watermark is not None and bool(db.execute("SELECT 1 FROM events WHERE group_id=? AND created>? AND message_id NOT LIKE 'bot:%' LIMIT 1",(group,watermark)).fetchone())
 
 
-def normalize(event):
+def normalize(event,cfg=None):
     parts = event.get('message')
     if not isinstance(parts, list):
         return '', []
-    text = []
+    group=str(event.get('group_id',''))
+    root=cfg.get('context_dir') if cfg else None
+    # render_text restores @mentions as @nickname so the model sees who was addressed.
+    text=[archive.render_text(parts,group,root)] if root else ['\n'.join(str(p.get('data',{}).get('text','')) for p in parts if isinstance(p,dict) and p.get('type')=='text')]
     images = []
     for part in parts:
         if not isinstance(part, dict):
@@ -105,16 +160,16 @@ def normalize(event):
         data = part.get('data', {})
         if not isinstance(data, dict):
             continue
-        if part.get('type') == 'text':
-            text.append(str(data.get('text', '')))
-        elif part.get('type') in ('image','mface'):
+        if part.get('type') in ('image','mface'):
             url = str(data.get('url', ''))
             if urlsplit(url).scheme == 'https':
                 # Never accept arbitrary local files or CQ instructions from source messages.
                 images.append({'url': url, 'key': str(data.get('file') or urlsplit(url).path)})
     labels=emoticons.describe(parts)
     if labels:text.append(labels)
-    return '\n'.join(text).strip()[:6000], images[:3]
+    fwd_text=archive.extract_forward_text(parts)
+    if fwd_text:text.append(fwd_text)
+    return '\n'.join(t for t in text if t).strip()[:6000], images[:3]
 
 
 def fingerprint(text, images):
@@ -173,7 +228,7 @@ def _register_and_backfill_group(db, group_id, cfg, api_cfg, now):
     configured = configured_groups(cfg)
     if group_id not in configured:
         try:
-            path = ROOT / 'app.workflow.json'
+            path = ROOT / 'workflow.json'
             current = json.loads(path.read_text())
             if not any(str(g.get('id')) == group_id for g in current.get('groups', [])):
                 new_group = {'id': group_id, 'name': group_id, 'enabled': True, 'preference': cfg.get('default_group_preference', '有趣的图文和链接；避免搬运日常对话片段')}
@@ -208,7 +263,7 @@ def _register_and_backfill_group(db, group_id, cfg, api_cfg, now):
 
 def ingest(db, event, cfg, now=None, api_cfg=None):
     now = time.time() if now is None else now
-    import interactions
+    from app import interactions
     interaction=interactions.notice(event,cfg,now)
     if interaction is False:return 'ignored_poke'
     if interaction is not None:
@@ -238,16 +293,27 @@ def ingest(db, event, cfg, now=None, api_cfg=None):
         return 'ignored'
     archive.record_event(cfg,event,now)
     if str(event.get('user_id', '')) == str(cfg['bot_id']):
-        with db:participants.observe(db,event,cfg,normalize(event)[0],now)
+        with db:participants.observe(db,event,cfg,normalize(event,cfg)[0],now)
         return 'self'
     message_id = event.get('message_id')
     if message_id is None or now - float(event.get('time', now)) > cfg.get('max_event_age_seconds', 300):
         return 'old'
-    text, images = normalize(event)
+    text, images = normalize(event,cfg)
     if any(isinstance(p,dict) and p.get('type')=='at' and str(p.get('data',{}).get('qq'))==str(cfg['bot_id']) for p in (event.get('message') if isinstance(event.get('message'),list) else [])):
         text='[@你] '+text
     if MARK in text:
         return 'loop'
+    # Owner recall command: "撤回" recalls the bot's most recent message in this group.
+    owner_qq = str(cfg.get('alerts', {}).get('owner_qq', ''))
+    if owner_qq and str(event.get('user_id', '')) == owner_qq and text.strip() in ('撤回', '/recall', 'recall'):
+        if api_cfg is not None:
+            from app import qq
+            try:
+                recalled = qq.recall(db, cfg, api_cfg, source)
+                service_log.event('surf-bot', 'owner recall group=' + source + ' message_id=' + recalled)
+            except Exception as exc:
+                service_log.event('surf-bot', 'owner recall failed group=' + source + ' error=' + type(exc).__name__)
+        return 'owner_recall'
     fp = fingerprint(text, images)
     if cfg.get('interaction',{}).get('enabled'):
         memory=MarkdownMemory(cfg.get('context_dir',ROOT/'context'))
@@ -314,12 +380,12 @@ def dispatch(db, cfg, api_cfg, now=None):
     groups = configured_groups(cfg)
     jobs = db.execute("""SELECT d.*,c.source_group,c.text,c.images,c.kind,c.emoticon,c.reply_parts FROM deliveries d
         JOIN candidates c ON c.id=d.candidate_id WHERE d.status='approved' AND c.status='approved'
-        AND ((c.kind IN ('reply','poke','merged_forward','moment_forward','image_share') AND d.created<=?) OR (c.kind NOT IN ('reply','poke','merged_forward','moment_forward','image_share') AND d.created<=?))
-        ORDER BY CASE WHEN c.kind IN ('reply','poke') THEN 0 ELSE 1 END,d.id LIMIT 50""", (now-cfg.get('reply_delay_seconds',0),now-cfg.get('hold_seconds',120))).fetchall()
+        AND ((c.kind IN ('reply','poke','send_to_group','send_private','merged_forward','moment_forward','image_share') AND d.created<=?) OR (c.kind NOT IN ('reply','poke','send_to_group','send_private','merged_forward','moment_forward','image_share') AND d.created<=?))
+        ORDER BY CASE WHEN c.kind IN ('reply','poke','send_to_group','send_private') THEN 0 ELSE 1 END,d.id LIMIT 50""", (now-cfg.get('reply_delay_seconds',0),now-cfg.get('hold_seconds',120))).fetchall()
     sent = 0
     for job in jobs:
         target = job['target_group']
-        if target not in groups or job['source_group'] not in groups:
+        if job['kind']!='send_private' and (target not in groups or job['source_group'] not in groups):
             continue
         if job['kind'] in ('reply','poke') and str(job['source_group'])!=str(target):
             with db:db.execute("UPDATE deliveries SET status='blocked_cross_group_reply' WHERE id=?",(job['id'],))
@@ -334,8 +400,9 @@ def dispatch(db, cfg, api_cfg, now=None):
             me=next((m for m in members if str(m.get('user_id'))==str(cfg['bot_id'])),None)
             if me is None or float(me.get('shut_up_timestamp',0))>now:continue
         else:
-            if not group_is_active(db,target,cfg,now):continue
-            if not participants.humans_recent(db,target,cfg,now):continue
+            if job['kind']!='send_private':
+                if not group_is_active(db,target,cfg,now):continue
+                if job['kind'] in ('reply','poke') and not job['deadline_reply'] and not participants.humans_recent(db,target,cfg,now):continue
         if cfg.get('refresh_before_send',False):
             try:
                 history=agent.onebot_call(api_cfg,'get_group_msg_history',{'group_id':int(target),'count':12,'disable_get_url':True})
@@ -346,12 +413,14 @@ def dispatch(db, cfg, api_cfg, now=None):
                 alerts.record(db,'refresh_before_send_failed','发送前刷新群消息失败，暂不发旧草稿。',details={'stage':'get_group_msg_history','error':type(exc).__name__,'retcode':getattr(exc,'retcode',None)})
                 continue
         # Only a frozen continuous-traffic window may ignore newer arrivals.
-        if job['kind'] not in ('moment_forward','image_share') and not social.request_queue.is_bound(db,job['id']) and not job['deadline_reply'] and newer_context(db,target,job['context_watermark']):
+        if job['kind'] not in ('share','merged_forward','moment_forward','image_share','send_private') and not social.request_queue.is_bound(db,job['id']) and not job['deadline_reply'] and newer_context(db,target,job['context_watermark']):
             with db:db.execute("UPDATE deliveries SET status='superseded',updated=? WHERE id=?",(now,job['id']))
             continue
-        paused=db.execute('SELECT until_time FROM operator_pause WHERE group_id=?',(target,)).fetchone()
-        if paused and paused[0]>now:continue
-        if job['kind'] in ('reply','poke','merged_forward','moment_forward','image_share') and now-job['created']>180:
+        if job['kind']!='send_private':
+            paused=db.execute('SELECT until_time FROM operator_pause WHERE group_id=?',(target,)).fetchone()
+            if paused and paused[0]>now:continue
+        reply_ttl=600 if job['deadline_reply'] else 180
+        if job['kind'] in ('reply','poke','send_to_group','send_private','merged_forward','moment_forward','image_share') and now-job['created']>reply_ttl:
             with db:db.execute("UPDATE deliveries SET status='expired',updated=? WHERE id=?",(now,job['id']))
             continue
         # Serialize rate-limit accounting and claims across workers/processes.
@@ -363,11 +432,11 @@ def dispatch(db, cfg, api_cfg, now=None):
         day = db.execute("SELECT count(*) FROM deliveries WHERE target_group=? AND status IN ('sent','uncertain') AND updated>?",(target,now-86400)).fetchone()[0]
         global_day = db.execute("SELECT count(*) FROM deliveries WHERE status IN ('sent','uncertain') AND updated>?",(now-86400,)).fetchone()[0]
         last = db.execute("SELECT max(updated) FROM deliveries WHERE target_group=? AND status IN ('sent','uncertain')",(target,)).fetchone()[0]
-        cooldown=cfg.get('reply_cooldown_seconds',0) if job['kind'] in ('reply','poke') else cfg.get('group_cooldown_seconds',3600)
-        if job['kind'] in ('merged_forward','moment_forward','image_share'):cooldown=cfg.get('merged_forward',{}).get('cooldown_seconds',60)
-        if job['kind'] not in ('reply','poke'):
-            last=db.execute("SELECT max(d.updated) FROM deliveries d JOIN candidates c ON c.id=d.candidate_id WHERE d.target_group=? AND c.kind NOT IN ('reply','poke') AND d.status IN ('sent','uncertain')",(target,)).fetchone()[0]
-            shares=db.execute("SELECT count(*) FROM deliveries d JOIN candidates c ON c.id=d.candidate_id WHERE d.target_group=? AND c.kind NOT IN ('reply','poke') AND d.status IN ('sent','uncertain') AND d.updated>?",(target,now-86400)).fetchone()[0]
+        cooldown=cfg.get('reply_cooldown_seconds',0) if job['kind'] in ('reply','poke','send_to_group','send_private') else cfg.get('group_cooldown_seconds',3600)
+        if job['kind'] in ('share','merged_forward','moment_forward','image_share'):cooldown=cfg.get('merged_forward',{}).get('cooldown_seconds',60)
+        if job['kind'] not in ('reply','poke','send_to_group','send_private'):
+            last=db.execute("SELECT max(d.updated) FROM deliveries d JOIN candidates c ON c.id=d.candidate_id WHERE d.target_group=? AND c.kind NOT IN ('reply','poke','send_to_group') AND d.status IN ('sent','uncertain')",(target,)).fetchone()[0]
+            shares=db.execute("SELECT count(*) FROM deliveries d JOIN candidates c ON c.id=d.candidate_id WHERE d.target_group=? AND c.kind NOT IN ('reply','poke','send_to_group') AND d.status IN ('sent','uncertain') AND d.updated>?",(target,now-86400)).fetchone()[0]
             share_cap=cfg.get('max_shares_per_group_day',3)
             if share_cap is not None and shares>=share_cap:
                 db.rollback();continue
@@ -380,42 +449,50 @@ def dispatch(db, cfg, api_cfg, now=None):
             continue
         db.commit()
         source = groups[job['source_group']]['name']
-        text=job['text'] if job['kind']=='reply' else MARK+source+'\n'+(job['caption'] or job['text'])
+        text=job['text'] if job['kind'] in ('reply','send_to_group','send_private') else MARK+source+'\n'+(job['caption'] or job['text'])
         emoticon=json.loads(job['emoticon']) if job['emoticon'] else None
+        emoticon_scope='private:'+target if job['kind']=='send_private' else target
         # Big stickers always ride their own bubble (or a pure-sticker reply); small faces stay inline.
-        sticker_parts=emoticons.segments(cfg['context_dir'],target,emoticon) if emoticon and emoticon.get('kind')=='sticker' else []
+        sticker_parts=emoticons.segments(cfg['context_dir'],emoticon_scope,emoticon) if emoticon and emoticon.get('kind')=='sticker' else []
         parts = [{'type':'text','data':{'text':text}}] if text else []
         if emoticon and emoticon.get('kind')=='face':
-            parts.extend(emoticons.segments(cfg['context_dir'],target,emoticon))
+            parts.extend(emoticons.segments(cfg['context_dir'],emoticon_scope,emoticon))
         if cfg.get('send_images', True):
             parts.extend({'type':'image','data':{'file':image['url']}} for image in json.loads(job['images']))
         reply_parts=json.loads(job['reply_parts']) if job['reply_parts'] else None
         if reply_parts:
-            import replies
-            try:parts=replies.segments(cfg['context_dir'],target,reply_parts)
+            from app import replies
+            try:parts=replies.segments(cfg['context_dir'],emoticon_scope,reply_parts)
             except (ValueError,OSError) as exc:
                 with db:db.execute("UPDATE deliveries SET status='failed',error=? WHERE id=?",('reply_parts_unavailable',job['id']))
                 continue
             sticker_parts=[]
         try:
-            if job['kind'] not in ('moment_forward','image_share') and not social.request_queue.is_bound(db,job['id']) and not job['deadline_reply'] and newer_context(db,target,job['context_watermark']):
+            if job['kind'] not in ('share','merged_forward','moment_forward','image_share','send_private') and not social.request_queue.is_bound(db,job['id']) and not job['deadline_reply'] and newer_context(db,target,job['context_watermark']):
                 with db:db.execute("UPDATE deliveries SET status='superseded',updated=? WHERE id=?",(time.time(),job['id']))
                 continue
-            if not intro and not participants.humans_recent(db,target,cfg):
+            if job['kind']!='send_private' and job['kind'] in ('reply','poke') and not intro and not participants.humans_recent(db,target,cfg):
                 with db:db.execute("UPDATE deliveries SET status='approved' WHERE id=?",(job['id'],))
                 continue
-            if job['kind']=='poke':
-                import interactions
+            if job['kind']=='send_private':
+                # Verify mutual friendship before sending a proactive private message.
+                friends=agent.onebot_call(api_cfg,'get_friend_list')
+                if not any(str(f.get('user_id'))==target for f in friends):
+                    with db:db.execute("UPDATE deliveries SET status='failed',error=? WHERE id=?",('not_friend',job['id']))
+                    continue
+                result=agent.onebot_call(api_cfg,'send_private_msg',{'user_id':int(target),'message':parts or sticker_parts})
+            elif job['kind']=='poke':
+                from app import interactions
                 user=interactions.member(cfg,target,job['text'],db,raw_id=True)
                 agent.onebot_call(api_cfg,'group_poke',{'group_id':int(target),'user_id':int(user)})
                 result={'message_id':'poke:delivery:'+str(job['id'])};text='[交互通知：自己戳了群友一下]';parts=[{'type':'text','data':{'text':text}}]
             elif job['kind']=='image_share':
-                import image_sharing
+                from app import image_sharing
                 parts=image_sharing.send_parts(db,cfg,job['source_group'],target,job['text'])
                 result=agent.onebot_call(api_cfg,'send_group_msg',{'group_id':int(target),'message':parts})
                 text='[分享图片：'+json.loads(job['text'])['description'][:200]+']'
             elif job['kind'] in ('merged_forward','moment_forward'):
-                import merged_forward
+                from app import merged_forward
                 forward_payload=merged_forward.send_payload(db,cfg,target,job['source_group'],job['text'])
                 result=agent.onebot_call(api_cfg,'send_group_forward_msg',forward_payload)
                 text='[合并转发：'+source+'，'+str(len(forward_payload['messages']))+'条]'
@@ -429,30 +506,35 @@ def dispatch(db, cfg, api_cfg, now=None):
                 text='[转发消息 '+mid+']'
             else:
                 result = agent.onebot_call(api_cfg,'send_group_msg',{'group_id':int(target),'message':parts or sticker_parts})
-            archive.record_event(cfg,{'group_id':target,'message_id':str(result['message_id']),'user_id':cfg['bot_id'],'time':now,'message':parts or sticker_parts})
+            if job['kind']!='send_private':
+                archive.record_event(cfg,{'group_id':target,'message_id':str(result['message_id']),'user_id':cfg['bot_id'],'time':now,'message':parts or sticker_parts})
             with db:
                 db.execute("UPDATE deliveries SET status='sent',message_id=?,updated=? WHERE id=?",(str(result['message_id']),now,job['id']))
                 db.execute('INSERT OR IGNORE INTO seen VALUES (?,?,?)',(target,job['fingerprint'],now))
                 record_text=(text+' '+emoticons.describe(parts)).strip() if reply_parts else (text if text else '[大表情]')
-                db.execute('INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?)',(target,'bot:'+str(result['message_id']),job['fingerprint'],'[自己] '+record_text,job['images'],now))
+                if job['kind']!='send_private':
+                    db.execute('INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?)',(target,'bot:'+str(result['message_id']),job['fingerprint'],'[自己] '+record_text,job['images'],now))
             # A text reply also carrying a big sticker: the sticker follows on its own bubble.
             # Its failure can't unsend the text, so it never fails the delivery.
             if parts and sticker_parts:
                 try:
-                    sticker_result=agent.onebot_call(api_cfg,'send_group_msg',{'group_id':int(target),'message':sticker_parts})
-                    archive.record_event(cfg,{'group_id':target,'message_id':str(sticker_result['message_id']),'user_id':cfg['bot_id'],'time':now,'message':sticker_parts})
-                    with db:
-                        db.execute('INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?)',(target,'bot:'+str(sticker_result['message_id']),job['fingerprint']+':sticker','[自己] [大表情]','[]',now))
+                    if job['kind']=='send_private':
+                        sticker_result=agent.onebot_call(api_cfg,'send_private_msg',{'user_id':int(target),'message':sticker_parts})
+                    else:
+                        sticker_result=agent.onebot_call(api_cfg,'send_group_msg',{'group_id':int(target),'message':sticker_parts})
+                        archive.record_event(cfg,{'group_id':target,'message_id':str(sticker_result['message_id']),'user_id':cfg['bot_id'],'time':now,'message':sticker_parts})
+                        with db:
+                            db.execute('INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?)',(target,'bot:'+str(sticker_result['message_id']),job['fingerprint']+':sticker','[自己] [大表情]','[]',now))
                 except Exception as sticker_exc:
                     alerts.record(db,'delivery_sticker_failed','文字已发出，但配套大表情发送失败。',scope=str(target),details={'target_group':str(target),'delivery_id':job['id'],'error':type(sticker_exc).__name__})
-            if cfg.get('interaction',{}).get('enabled'):
+            if cfg.get('interaction',{}).get('enabled') and job['kind']!='send_private':
                 memory=MarkdownMemory(cfg.get('context_dir',ROOT/'context'))
                 try:memory.add_note('group',target,'自己最近发言：'+(text or '[大表情]'))
                 finally:memory.close()
             if reply_parts:
-                for item in replies.selections(reply_parts):emoticons.mark_used(cfg['context_dir'],target,item)
+                for item in replies.selections(reply_parts):emoticons.mark_used(cfg['context_dir'],emoticon_scope,item)
             if emoticon:
-                emoticons.mark_used(cfg['context_dir'],target,emoticon)
+                emoticons.mark_used(cfg['context_dir'],emoticon_scope,emoticon)
             service_log.event('surf-bot','delivery sent id='+str(job['id'])+' group='+str(target)+' kind='+str(job['kind'])+' message_id='+str(result['message_id']))
             sent += 1
         except Exception as exc:
@@ -548,12 +630,15 @@ def handler(db_path, cfg, secret, api_loader=None):
                 self.send_response(200); self.end_headers(); self.wfile.write(b'{}')
             except (ValueError,TypeError,AttributeError):
                 self.send_error(400)
+            except Exception as exc:
+                print('事件处理异常：'+type(exc).__name__+': '+str(exc),flush=True)
+                self.send_error(500)
     return Handler
 
 
 def main():
     p=argparse.ArgumentParser(description='持续运行的 QQ 群间搬运 workflow')
-    p.add_argument('--config',type=Path,default=ROOT/'app.workflow.json')
+    p.add_argument('--config',type=Path,default=ROOT/'workflow.json')
     s=p.add_subparsers(dest='command',required=True)
     for command in ['run','status','pending','tick','inbox']: s.add_parser(command)
     c=s.add_parser('context'); c.add_argument('group')
@@ -588,9 +673,14 @@ def main():
             stop=threading.Event()
             def stopped(*_): stop.set()
             signal.signal(signal.SIGTERM,stopped); signal.signal(signal.SIGINT,stopped)
-            thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+            def _serve():
+                try:server.serve_forever()
+                except Exception as exc:
+                    print('HTTP 服务异常退出：'+type(exc).__name__+': '+str(exc),flush=True)
+                    import traceback; traceback.print_exc()
+            thread=threading.Thread(target=_serve,daemon=True,name='http-events'); thread.start()
             if cfg.get('memory_schema',{}).get('enabled',False):
-                import memory_store
+                from app import memory_store
                 memory_store.migrate(cfg['context_dir'],cfg['groups'],[dict(row) for row in db.execute('SELECT * FROM speaker_profiles')])
             with db:db.execute("UPDATE social_jobs SET status='pending' WHERE status='processing'")
             with db:db.execute("UPDATE private_messages SET status=CASE WHEN EXISTS (SELECT 1 FROM private_deliveries d WHERE d.user_id=private_messages.user_id AND d.trigger_id=private_messages.message_id) THEN 'uncertain' ELSE 'pending' END WHERE status='processing'")
@@ -600,41 +690,52 @@ def main():
             for prior in db.execute('SELECT e.*,j.user_id FROM events e JOIN social_jobs j ON j.event_key=e.group_id||":"||e.message_id AND j.target_group=e.group_id WHERE e.created>?',(time.time()-300,)).fetchall():
                 with db:participants.observe(db,{'group_id':prior['group_id'],'message_id':prior['message_id'],'user_id':prior['user_id'],'time':prior['created']},cfg,prior['text'],time.time())
             # Recover messages arriving during a restart, without replaying old conversations.
-            for group in configured_groups(cfg):
-                if not group_is_active(db,group,cfg):continue
-                try:
-                    history=agent.onebot_call(api_cfg,'get_group_msg_history',{'group_id':int(group),'count':100,'disable_get_url':True})
-                    for event in history.get('messages',[]):
-                        event=dict(event,post_type='message',message_type='group',group_id=group)
-                        archive.record_event(cfg,event)
-                        if time.time()-float(event.get('time',0))<=180:ingest(db,event,cfg)
-                except Exception as exc:
-                    alerts.record(db,'startup_history_failed','重启时补读群消息失败。',scope=group,details={'error':type(exc).__name__})
-            import memory_maintenance
+            startup_backread(db,cfg,api_cfg)
+            from app import memory_maintenance
             for group in cfg['groups']:
                 if group.get('enabled',True):memory_maintenance.enqueue(cfg,group['id'],'startup')
             sessions=SessionPool()
+            last_review=0.0
             service_log.event('surf-bot','worker started mode='+cfg.get('mode','preview'))
             print('群间 workflow 已启动，监听127.0.0.1:{}，模式{}'.format(cfg.get('port',8766),cfg.get('mode','preview')),flush=True)
             try:
                 while not stop.is_set():
+                    if not thread.is_alive():
+                        print('HTTP 事件接收线程已退出，主动结束进程以便 supervisor 重启',flush=True)
+                        break
                     try:
                         cfg=current_config()
                         prune(db,cfg)
                         usage_report.tick(db,cfg)
-                        moderation.check_recovery(db,cfg,api_cfg)
-                        private_chat.tick(db,cfg,api_cfg)
-                        social.tick(db,cfg,sessions)
-                        dispatch(db,cfg,api_cfg)
-                        cfg=onboarding.tick(db,cfg,api_cfg,args.config)
-                        checked=db.execute("SELECT value FROM metrics WHERE key='last_bridge_check'").fetchone()
-                        if not checked or time.time()-float(checked[0])>=60:
-                            try:
-                                bridge=agent.onebot_call(api_cfg,'get_status')
-                                if not bridge.get('online'):raise ValueError('Offline')
-                            except Exception:
-                                alerts.record(db,'qq_offline','QQ 接口不可用或账号离线；连接恢复后会补发此通知。')
-                            with db:db.execute('INSERT OR REPLACE INTO metrics VALUES (?,?)',('last_bridge_check',str(time.time())))
+                        # Probe OneBot once per tick. When offline, skip steps that
+                        # call OneBot so a single outage does not turn into a storm of
+                        # worker_* alerts; qq_offline already carries the notification.
+                        bridge_online=True
+                        try:
+                            bridge=agent.onebot_call(api_cfg,'get_status')
+                            if not bridge.get('online'):bridge_online=False
+                        except Exception:
+                            bridge_online=False
+                            alerts.record(db,'qq_offline','QQ 接口不可用或账号离线；连接恢复后会补发此通知。')
+                        if bridge_online:
+                            moderation.check_recovery(db,cfg,api_cfg)
+                            private_chat.tick(db,cfg,api_cfg)
+                            social.tick(db,cfg,sessions,api_cfg)
+                            dispatch(db,cfg,api_cfg)
+                            cfg=onboarding.tick(db,cfg,api_cfg,args.config)
+                            # 事后慢路审阅：每隔 interval_seconds 扫描近两分钟内的回复，
+                            # 有问题则撤回原消息并用慢路结果重发。
+                            review_interval=float(cfg.get('reviewer',{}).get('interval_seconds',60))
+                            if time.time()-last_review>=review_interval:
+                                try:reviewer.tick(db,cfg,sessions,api_cfg)
+                                except Exception as exc:
+                                    alerts.record(db,'reviewer_'+type(exc).__name__,'事后审阅环节异常，下一周期继续。',details={'error':str(exc)[:200]})
+                                last_review=time.time()
+                        else:
+                            # social.tick only talks to the model, not OneBot, so it can
+                            # keep understanding messages while the bridge is down.
+                            social.tick(db,cfg,sessions)
+                        with db:db.execute('INSERT OR REPLACE INTO metrics VALUES (?,?)',('last_bridge_check',str(time.time())))
                         alerts.flush(db,cfg,api_cfg)
                         export_inbox(db,cfg,ROOT/'workflow-inbox.html')
                         with db:
@@ -643,7 +744,7 @@ def main():
                         import traceback
                         print('工作周期失败：'+type(exc).__name__,flush=True)
                         traceback.print_exc()
-                        alerts.record(db,'worker_'+type(exc).__name__,'后台工作周期发生异常，服务会在下一周期继续。')
+                        alerts.record(db,'worker_'+type(exc).__name__,'后台工作周期发生异常，服务会在下一周期继续。',details={'stage':'worker_tick','error':type(exc).__name__,'message':str(exc)[:200]})
                     stop.wait(cfg.get('tick_seconds',30))
             finally:
                 if cfg.get('interaction',{}).get('enabled'):

@@ -2,7 +2,7 @@
 import json,time,hashlib,re
 from pathlib import Path
 from app.memory import MarkdownMemory,atomic_write,safe_id
-from app import archive, emoticons, participants
+from app import archive,emoticons,participants
 from app.protocol import parse_json
 from app import memory_store
 TOOLS=[
@@ -29,84 +29,121 @@ TOOLS=[
  {'name':'share_image','description':'把本群已理解的单张图直接发往匹配的活跃群，仅参数image_id、image_destinations给定route_id、quality=natural；无解说文字'},
  {'name':'merged_forward','description':'合并转发一段节目：bundle_id、message_ids、quality=natural；搬本群节目到其他活跃群时再带 outgoing_moments.destination.route_id，省略route_id则搬入当前群'},
  {'name':'forward','description':'转发当前群中某条消息（原生转发卡片），参数 message_id（取自 recent_target_messages）'},
+ {'name':'send_to_group','description':'主动向另一个已启用且活跃的群发一条文字消息，参数 group_id（取自 available_groups）、text（1到1200字），可选 emoticon、reply_parts、quality=natural；应用校验目标群活跃、真人在场、冷却和去重后发送。不能发给本群或未列出的群'},
+ {'name':'read_group','description':'读取另一个已启用群的近期原话，参数 group_id（取自 available_groups）；返回该群最近消息，帮助判断是否适合主动发言或分享。不能读本群或未列出的群'},
+ {'name':'list_group_members','description':'列出当前群全部成员（含群名片、账号类型判断），无参数；群友问群里有哪些人、哪些bot、多少人、点名全员时调用，不要只凭近期活跃成员猜测'},
+ {'name':'send_private','description':'向当前群中某位互粉好友发一条私信，参数 user_id（取自 member_profiles）、text（1到1200字），可选 emoticon、reply_parts、quality=natural；应用校验对方是本群成员且互为好友、冷却和去重后发送。不能发给群外或非好友用户'},
  {'name':'wait','description':'保持安静，参数 reason'}]
-ARGUMENTS={'ask':{'alias','text','quality','request_ids','understanding'},'recall_memory':{'query','alias'},'poke':{'alias','quality'},'retrace_context':{'query'},'set_group_context':{'topics','referents','open_interactions'},'record_understanding':{'understanding'},'web_search':{'query'},'read_webpage':{'url'},'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id','alias'},'set_member_alias':{'alias','name','evidence_event_key'},'search_history':{'query'},'list_emoticons':set(),'search_emoticons':{'query','include_unreviewed'},'view_emoticon':{'id'},'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'share_image':{'image_id','route_id','quality'},'merged_forward':{'bundle_id','message_ids','quality','route_id'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id','bundle_id','message_ids','route_id','image_id','image_share'}}
-for _terminal in ('finish_turn','reply','share','forward','merged_forward','share_image'):
+ARGUMENTS={'ask':{'alias','text','quality','request_ids','understanding'},'recall_memory':{'query','alias'},'poke':{'alias','quality'},'retrace_context':{'query'},'set_group_context':{'topics','referents','open_interactions'},'record_understanding':{'understanding'},'web_search':{'query'},'read_webpage':{'url'},'get_memory_schema':set(),'read_context':set(),'get_member':{'user_id','alias'},'set_member_alias':{'alias','name','evidence_event_key'},'search_history':{'query'},'list_emoticons':set(),'search_emoticons':{'query','include_unreviewed'},'view_emoticon':{'id'},'reply':{'text','emoticon','quality'},'share':{'candidate_id','text','quality'},'forward':{'message_id'},'share_image':{'image_id','route_id','quality'},'merged_forward':{'bundle_id','message_ids','quality','route_id'},'send_to_group':{'group_id','text','emoticon','quality','reply_parts','reason'},'read_group':{'group_id'},'list_group_members':set(),'send_private':{'user_id','text','emoticon','quality','reply_parts','reason'},'wait':{'reason'},'update_states':{'group_state','members','images'},'finish_turn':{'group_state','members','images','action','text','candidate_id','emoticon','reason','quality','message_id','bundle_id','message_ids','route_id','image_id','image_share','group_id','user_id'}}
+for _terminal in ('finish_turn','reply','share','forward','merged_forward','share_image','send_to_group','send_private'):
  ARGUMENTS[_terminal].update({'request_ids','request_outcome'})
 ARGUMENTS['finish_turn'].add('alias')
 ARGUMENTS['poke'].add('understanding')
-ARGUMENTS['reply'].add('reply_parts');ARGUMENTS['finish_turn'].add('reply_parts')
-for _terminal in ('finish_turn','reply','wait','share','forward','merged_forward','share_image'):ARGUMENTS[_terminal].add('understanding')
-READS={'recall_memory','retrace_context','set_group_context','record_understanding','web_search','read_webpage','get_memory_schema','update_states','read_context','get_member','set_member_alias','search_history','list_emoticons','search_emoticons','view_emoticon'}
+ARGUMENTS['reply'].add('reply_parts');ARGUMENTS['finish_turn'].add('reply_parts');ARGUMENTS['send_to_group'].add('reply_parts');ARGUMENTS['send_private'].add('reply_parts')
+for _terminal in ('finish_turn','reply','wait','share','forward','merged_forward','share_image','send_to_group','send_private'):ARGUMENTS[_terminal].add('understanding')
+READS={'recall_memory','retrace_context','set_group_context','record_understanding','web_search','read_webpage','get_memory_schema','update_states','read_context','get_member','set_member_alias','search_history','list_emoticons','search_emoticons','view_emoticon','read_group','list_group_members'}
 def decode(raw):
  value=parse_json(raw,'worker_api')
  # Bounded normalization; never let outer fields override explicit arguments.
  for _ in range(4):
   if not isinstance(value,dict):break
   if value.get('type')=='json_object' and isinstance(value.get('content'),str):
-   if set(value)-{'type','content'}:raise ValueError('ambiguous_api_envelope')
+   # Tolerate extra envelope fields the provider/model may wrap around the
+   # JSON content; only type+content matter for unwrapping.
    value=parse_json(value['content'],'worker_api');continue
   if 'call' not in value:
    if 'action' in value:value={'call':{'name':'finish_turn','arguments':value}}
    elif value.get('type') in ('wait','reply','ask','poke','share','forward','merged_forward','share_image'):
     value={'call':{'name':'finish_turn','arguments':{'action':value['type'],**{k:v for k,v in value.items() if k!='type'}}}}
   if isinstance(value.get('call'),dict) and isinstance(value['call'].get('arguments'),dict):
-   args=dict(value['call']['arguments']);extra={k:v for k,v in value.items() if k!='call'}
-   # Accept only fields exposed for this exact API; conflicting values remain errors.
+   args=dict(value['call']['arguments'])
    exposed=ARGUMENTS.get(value['call'].get('name'),set())
-   if set(extra)-exposed:raise ValueError('ambiguous_api_envelope')
+   # Merge only recognized outer fields into arguments; ignore unknown
+   # top-level fields the model may emit instead of rejecting the whole call.
+   extra={k:v for k,v in value.items() if k!='call' and k in exposed}
    if any(k in args and args[k]!=v for k,v in extra.items()):raise ValueError('conflicting_api_arguments')
+   saved_plan=value.get('_plan')
    args.update(extra);value={'call':{**value['call'],'arguments':args}}
+   # 保留顶层推理槽位 _plan（不合并进 arguments，仅供应用层调度）
+   if isinstance(saved_plan,dict):value['_plan']=saved_plan
   break
- if not isinstance(value,dict) or set(value)-{'call'}:raise ValueError('worker_must_call_application_api')
+ if not isinstance(value,dict):raise ValueError('worker_must_call_application_api')
  call=value.get('call')
- if not isinstance(call,dict) or set(call)-{'name','arguments'}:raise ValueError('invalid_api_call')
+ if not isinstance(call,dict):raise ValueError('invalid_api_call')
+ # Ignore unexpected keys inside call; only name and arguments are used.
+ call={k:v for k,v in call.items() if k in ('name','arguments')}
  if call.get('name') not in {t['name'] for t in TOOLS}:raise ValueError('api_not_exposed')
  args=call.get('arguments',{})
  if not isinstance(args,dict):raise ValueError('invalid_api_arguments')
  name=call['name'];allowed=ARGUMENTS[name]
- if set(args)-allowed:raise ValueError('argument_not_exposed')
+ # Drop unknown arguments rather than failing the turn.
+ args={k:v for k,v in args.items() if k in allowed}
  if name in ('reply','share') and not isinstance(args.get('text',''),str):raise ValueError('invalid_text')
- return {'name':name,'arguments':args}
+ result={'name':name,'arguments':args}
+ # 透传顶层 _plan 字段（模型自行声明是否需要工具），供应用层调度
+ if isinstance(value,dict) and isinstance(value.get('_plan'),dict):result['_plan']=value['_plan']
+ return result
 def decision(call):
  result=_decision(call)
  if 'understanding' in call['arguments']:result['understanding']=call['arguments']['understanding']
+ if '_plan' in call:result['_plan']=call['_plan']
  return result
 
 def _decision(call):
  name=call['name'];args=call['arguments']
  quality=args.get('quality')
- if (name in ('reply','ask','poke','share','merged_forward','share_image') or name=='finish_turn' and args.get('action') in ('reply','ask','poke','share','merged_forward','share_image')) and quality!='natural':
+ if (name in ('reply','ask','poke','share','merged_forward','share_image','send_to_group','send_private') or name=='finish_turn' and args.get('action') in ('reply','ask','poke','share','merged_forward','share_image','send_to_group','send_private')) and quality!='natural':
   result={'action':'wait','text':'','reason':'回复难接、尴尬或尚未确认自然，跳过本轮'}
   if name=='finish_turn':result['state_updates']={k:args[k] for k in ('group_state','members','images') if k in args}
   return result
  if name=='finish_turn':
-  if args.get('action') not in ('wait','reply','ask','poke','share','forward','merged_forward','share_image'):raise ValueError('invalid_finish_action')
+  if args.get('action') not in ('wait','reply','ask','poke','share','forward','merged_forward','share_image','send_to_group','send_private'):raise ValueError('invalid_finish_action')
   if not isinstance(args.get('text',''),str):raise ValueError('invalid_text')
-  return {'action':args['action'],'alias':args.get('alias'),'text':args.get('text','')[:1200],'reply_parts':args.get('reply_parts'),'image_share':args.get('image_share'),'image_id':args.get('image_id'),'request_ids':args.get('request_ids',[]),'request_outcome':args.get('request_outcome'),'route_id':args.get('route_id'),'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'message_id':str(args.get('message_id','')) if args.get('message_id') else None,'reason':str(args.get('reason',''))[:200],'state_updates':{k:args[k] for k in ('group_state','members','images') if k in args}}
+  return {'action':args['action'],'alias':args.get('alias'),'group_id':str(args.get('group_id','')) if args.get('group_id') else None,'user_id':str(args.get('user_id','')) if args.get('user_id') else None,'text':args.get('text','')[:1200],'reply_parts':args.get('reply_parts'),'image_share':args.get('image_share'),'image_id':args.get('image_id'),'request_ids':args.get('request_ids',[]),'request_outcome':args.get('request_outcome'),'route_id':args.get('route_id'),'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'message_id':str(args.get('message_id','')) if args.get('message_id') else None,'reason':str(args.get('reason',''))[:200],'state_updates':{k:args[k] for k in ('group_state','members','images') if k in args}}
  if name=='ask':return {'action':'ask','alias':args.get('alias'),'text':args.get('text',''),'request_ids':args.get('request_ids',[])}
  if name=='poke':return {'action':'poke','alias':str(args.get('alias','')),'text':''}
- if name in READS:return {'action':'read','call':call,'text':''}
+ if name in READS:return {'action':'read','call':call,'text':str(args.get('text',''))[:120]}
  if name=='forward':
   mid=str(args.get('message_id',''))
   if not mid:raise ValueError('forward_requires_message_id')
   return {'action':'forward','text':'','message_id':mid,'emoticon':None,'reason':''}
+ if name=='send_to_group':
+  gid=str(args.get('group_id','')).strip()
+  text=args.get('text','').strip()
+  if not gid:raise ValueError('send_to_group_requires_group_id')
+  if not text and not args.get('emoticon') and not args.get('reply_parts'):raise ValueError('send_to_group_requires_content')
+  return {'action':'send_to_group','group_id':gid,'text':text[:1200],'reply_parts':args.get('reply_parts'),'emoticon':args.get('emoticon'),'reason':str(args.get('reason',''))[:200],'request_ids':args.get('request_ids',[]),'request_outcome':args.get('request_outcome')}
+ if name=='send_private':
+  uid=str(args.get('user_id','')).strip()
+  text=args.get('text','').strip()
+  if not uid:raise ValueError('send_private_requires_user_id')
+  if not text and not args.get('emoticon') and not args.get('reply_parts'):raise ValueError('send_private_requires_content')
+  return {'action':'send_private','user_id':uid,'text':text[:1200],'reply_parts':args.get('reply_parts'),'emoticon':args.get('emoticon'),'reason':str(args.get('reason',''))[:200],'request_ids':args.get('request_ids',[]),'request_outcome':args.get('request_outcome')}
  return {'action':name,'text':args.get('text','')[:1200],'reply_parts':args.get('reply_parts'),'image_share':args.get('image_share'),'image_id':args.get('image_id'),'request_ids':args.get('request_ids',[]),'request_outcome':args.get('request_outcome'),'route_id':args.get('route_id'),'bundle_id':args.get('bundle_id'),'message_ids':args.get('message_ids'),'candidate_id':args.get('candidate_id'),'emoticon':args.get('emoticon'),'reason':str(args.get('reason',''))[:200]}
 def read(db,cfg,target,payload,call):
  name=call['name'];args=call['arguments']
  if name=='recall_memory':
-  import context_memory
+  from app import context_memory
   query=args.get('query','')
   if not isinstance(query,str) or len(query)>300:raise ValueError('invalid_memory_query')
   return context_memory.retrieve(cfg,target,payload,query,args.get('alias'))
  if name=='retrace_context':
-  import orientation
+  from app import orientation
   query=args.get('query','')
   if not isinstance(query,str) or len(query)>300:raise ValueError('invalid_retrace_query')
   transcript=orientation.prepare(cfg,target,time.time(),payload.get('recent_target_messages',[])+payload.get('unread_messages',[]))
   if query:
    disk=archive.Archive(cfg['context_dir'])
-   try:hits=disk.search(target,query,limit=16)
+   try:
+    hits=disk.search(target,query,limit=16)
+    for row in hits:
+     mid=row.get('reply_to')
+     if mid:
+      saved=disk.get(target,str(mid))
+      row['reply_to']={'message_id':str(mid),'event_key':str(target)+':'+str(mid),
+        'speaker':saved['user_id'] if saved else 'unknown','nickname':saved['nickname'] if saved else '未知作者',
+        'time':saved['created'] if saved else None,'text':(saved['text'][:1200] if saved else '[引用原文未缓存，不猜测]'),
+        'available':bool(saved)}
    finally:disk.close()
    existing={r.get('event_key') for r in transcript['messages']}
    for row in hits:
@@ -119,13 +156,13 @@ def read(db,cfg,target,payload,call):
    payload['member_profiles']=participants.evidence(db,[{'user_id':user} for user in users],include_samples=False)
   return {'prepared':True,'coverage':transcript['coverage'],'instruction':'本群原话已放入orientation_history，请预读后set_group_context，不要先公开回复'}
  if name=='set_group_context':
-  import orientation
+  from app import orientation
   return orientation.save(cfg,target,payload,args)
  if name in ('web_search','read_webpage'):
-  import internet
+  from app import internet
   return internet.tool(cfg,name,args)
  if name=='record_understanding':
-  import understanding
+  from app import understanding
   return understanding.save(cfg,target,payload,args.get('understanding'),db)
  if name=='get_memory_schema':return {k:memory_store.SCHEMA['$defs'][k] for k in ('FactInput','RelationInput','StateInput','GroupPortraitInput','PersonPortraitInput')}
  if name=='update_states':
@@ -144,7 +181,7 @@ def read(db,cfg,target,payload,call):
   payload['_vision']=[item]+[v for v in payload.get('_vision',[]) if v['reference']!=item['reference']][:3]
   return {'reference':item['reference'],'instruction':'下一次调用附上这张真实图片；用images状态接口描述、标记is_sticker和tags后可选择发送'}
  if name in ('get_member','set_member_alias'):
-  import identities
+  from app import identities
   registry=identities.Registry(cfg['context_dir'])
   try:user=registry.resolve(args['alias']) if 'alias' in args else str(args.get('user_id',''))
   finally:registry.close()
@@ -161,7 +198,8 @@ def read(db,cfg,target,payload,call):
   result=dict(row) if row else {'user_id':user,'kind':'unknown'}
   result['memory']=member_markdown(cfg,target,user)
   try:
-   info=__import__('agent').onebot_call(cfg,'get_group_member_info',{'group_id':int(target),'user_id':int(user),'no_cache':False})
+   from app import agent
+   info=agent.onebot_call(cfg,'get_group_member_info',{'group_id':int(target),'user_id':int(user),'no_cache':False})
    result['account']={k:info.get(k) for k in ('user_id','nickname','card') if k in info}
   except Exception:result['account_status']='unavailable'
   if memory_store.enabled(cfg['context_dir']):
@@ -177,6 +215,63 @@ def read(db,cfg,target,payload,call):
   disk=archive.Archive(cfg['context_dir'])
   try:return disk.search(target,query,limit=12)
   finally:disk.close()
+ if name=='read_group':
+  gid=str(args.get('group_id','')).strip()
+  if not gid:raise ValueError('read_group_requires_group_id')
+  if gid==str(target):raise ValueError('read_group_same_as_current')
+  allowed={str(g['id']) for g in cfg.get('groups',[]) if g.get('enabled',True)}
+  if gid not in allowed:raise ValueError('read_group_not_enabled')
+  rows=db.execute('''SELECT e.text AS text,e.images AS images,e.created AS created,e.message_id AS message_id,j.user_id AS user_id
+    FROM events e LEFT JOIN social_jobs j
+    ON j.event_key=e.group_id||':'||e.message_id AND j.target_group=e.group_id
+    WHERE e.group_id=? AND e.message_id NOT LIKE "bot:%"
+    GROUP BY e.group_id,e.message_id ORDER BY e.created DESC LIMIT 40''',(gid,)).fetchall()
+  messages=[];budget=8000
+  disk=archive.Archive(cfg['context_dir']) if (Path(cfg['context_dir'])/'archive.sqlite3').exists() else None
+  try:
+   for r in rows:
+    text=r['text'][:1500]
+    if budget-len(text)<0:break
+    budget-=len(text)
+    user_id=r['user_id'];nickname=None
+    if disk is not None:
+     if user_id:
+      saved=disk.db.execute('SELECT nickname FROM messages WHERE group_id=? AND user_id=? ORDER BY id DESC LIMIT 1',(gid,user_id)).fetchone()
+      if saved and saved['nickname']:nickname=saved['nickname']
+     else:
+      saved=disk.db.execute('SELECT user_id,nickname FROM messages WHERE group_id=? AND message_id=?',(gid,r['message_id'])).fetchone()
+      if saved:user_id=saved['user_id'];nickname=saved['nickname']
+    user_id=str(user_id or 'unknown')
+    messages.append({'event_key':str(gid)+':'+str(r['message_id']),'speaker':user_id,'nickname':str(nickname or user_id),'text':text,'time':r['created']})
+  finally:
+   if disk is not None:disk.close()
+  return {'group_id':gid,'messages':list(reversed(messages)),'instruction':'这是目标群近期原话，用于判断是否适合主动发言或分享；不要泄露私聊信息'}
+ if name=='list_group_members':
+  from app import agent
+  try:
+   data=agent.onebot_call(cfg,'get_group_member_list',{'group_id':int(target)})
+  except Exception as e:
+   return {'error':'get_group_member_list_failed','detail':str(e)[:200]}
+  members=data if isinstance(data,list) else data.get('data',[]) if isinstance(data,dict) else []
+  known_bots={str(x) for x in cfg.get('human_presence',{}).get('known_bots',[])}
+  known_humans={str(x) for x in cfg.get('human_presence',{}).get('known_humans',[])}
+  result=[]
+  for m in members:
+   uid=str(m.get('user_id',''))
+   if not uid:continue
+   card=str(m.get('card') or m.get('nickname') or uid)
+   role=str(m.get('role','member'))
+   # 账号类型判断：配置 > speaker_profiles > 昵称线索
+   kind=None
+   if uid==str(cfg.get('bot_id')):kind='bot_self'
+   elif uid in known_bots:kind='bot'
+   elif uid in known_humans:kind='human'
+   else:
+    row=db.execute('SELECT kind FROM speaker_profiles WHERE user_id=?',(uid,)).fetchone() if db else None
+    if row and row['kind']:kind=row['kind']
+    elif 'bot' in card.lower() or '机器人' in card:kind='bot_suspect'
+   result.append({'user_id':uid,'nickname':card,'role':role,'account_kind':kind or 'unknown'})
+  return {'members':result,'total':len(result),'instruction':'列出当前群全部成员及账号类型；account_kind 为 bot/bot_self/bot_suspect 的是机器人，human 是真人，unknown 待判断。回答群友关于群成员/bot 数量的问题时基于此列表，不要只凭记忆猜测。'}
  raise ValueError('not_read_api')
 def with_web_sources(decision,payload):
  if decision.get('action')!='reply':return decision
@@ -199,7 +294,11 @@ def settle_memory(memory,group,batch,views):
  # Foreign events must never become this group's local episodic memory.
  if any('source_group' in row.keys() and str(row['source_group'])!=str(group) for row in batch):raise ValueError('cross_group_memory_window')
  # Raw episode bookkeeping is automatic; semantic state comes through update_states.
- summary='；'.join(str(v['speaker'])+'：'+v['text'][:160] for v in views)[:1600]
+ def speaker_label(view):
+  if view.get('speaker')=='self':return 'Luna'
+  name=view.get('nickname')
+  return name if name and str(name)!=str(view.get('speaker')) else str(view.get('speaker'))
+ summary='；'.join(speaker_label(v)+'：'+v['text'][:160] for v in views)[:1600]
  state=memory.conversation_state(group) or ('近期原话摘录（非语义结论，原文可按历史接口查阅）：\n'+summary)
  memory.remember_window(group,batch,state[-2800:],summary)
  return summary

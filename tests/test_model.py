@@ -81,7 +81,7 @@ class ChatGPTTests(unittest.TestCase):
         with patch.object(auth,'access_token',return_value='secret'),patch.object(auth.urllib.request,'urlopen',return_value=io.BytesIO(b'')):
             with self.assertRaises(ValueError):auth.infer('selected','rules',{})
     def test_planner_uses_oauth_adapter(self):
-        with patch.object(auth,'available',return_value=True),patch.object(auth,'infer',return_value=('{"call":{"name":"wait","arguments":{}}}',{})):
+        with patch.object(auth,'available',return_value=True),patch.object(auth,'infer',return_value=('{"_plan":{"understands_context":true,"needs_tool":false,"tool_name":null,"tool_args":{},"pre_tool_message":null,"reasoning":"上下文足够，无需工具"},"call":{"name":"wait","arguments":{}}}',{})):
             result,_=social.call_model({'enabled':True,'provider':'chatgpt','model':'selected'}, {})
             self.assertEqual(result['action'],'wait')
     def test_stream_final_items_survive_empty_completed_output(self):
@@ -115,8 +115,12 @@ class InternetTests(unittest.TestCase):
   self.assertEqual(application.decision(call)['action'],'read')
   with patch('app.internet.search',side_effect=TimeoutError):result=application.read(None,{},'1',{},call)
   self.assertEqual(result['error'],'TimeoutError')
- def test_duplicate_tool_argument_rejected(self):
-  with self.assertRaises(ValueError):application.decode('{"call":{"name":"read_webpage","arguments":{"url":"https://example.com","cookie":"private"}}}')
+ def test_unknown_tool_argument_is_dropped(self):
+  # Unknown arguments (e.g. cookie) are silently dropped so the turn
+  # proceeds without them instead of failing.
+  result=application.decode('{"call":{"name":"read_webpage","arguments":{"url":"https://example.com","cookie":"private"}}}')
+  self.assertEqual(result['name'],'read_webpage')
+  self.assertNotIn('cookie',result['arguments'])
 
  def test_gzip_response_and_decompression_limit(self):
   import gzip
@@ -154,7 +158,7 @@ class ModelRetryTests(unittest.TestCase):
 
         def generate(model, *args):
             calls.append(model)
-            return ('bad' if len(calls) == 1 else '{"call":{"name":"wait","arguments":{}}}', {'prompt_tokens': 10, 'completion_tokens': 2})
+            return ('bad' if len(calls) == 1 else '{"_plan":{"understands_context":true,"needs_tool":false,"tool_name":null,"tool_args":{},"pre_tool_message":null,"reasoning":"上下文足够"},"call":{"name":"wait","arguments":{}}}', {'prompt_tokens': 10, 'completion_tokens': 2})
         model = {'reasoning_effort': 'none', '_retry_reserve': lambda usage: 42, '_retry_complete': lambda *args: done.append(args)}
         with patch('app.social.generate_text', side_effect=generate):
             (d, u) = social.call_model(model, {})

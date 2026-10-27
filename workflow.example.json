@@ -88,5 +88,11 @@
   },
   "memory_updates": {
     "interval_seconds": 300
+  },
+  "reviewer": {
+    "enabled": false,
+    "interval_seconds": 60,
+    "max_reviews_per_tick": 5,
+    "review_reasoning_effort": "low"
   }
 }
