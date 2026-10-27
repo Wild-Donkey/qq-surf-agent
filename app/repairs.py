@@ -20,7 +20,7 @@ def perform(db,cfg,root,job,result):
    if not test.exists():raise ValueError('缺少协议回归测试，未执行恢复')
    checked=subprocess.run([sys.executable,'-m','unittest','discover','-s','tests','-p','test_protocol.py','-q'],cwd=root,capture_output=True,text=True,timeout=30)
    if checked.returncode:raise ValueError('协议回归测试未通过，未恢复调用')
-   import social,application
+   from app import social,application
    slot=model_gate.reserve(db,cfg)
    if slot is None:out={'status':'deferred','message':'等待模型调用空档后继续验证。'}
    else:
@@ -48,7 +48,7 @@ def perform(db,cfg,root,job,result):
      if row and float(row[0])>start:out={'status':'repaired','message':'已重启聊天进程，并确认新进程正常推进消息处理。'};break
   elif action=='retry_profiling':
    if not code.startswith(('group_bootstrap','profile_')):raise ValueError('该故障不允许重建画像任务')
-   import profiling
+   from app import profiling
    details=json.loads(alert['details'] or '{}');group=str(details.get('group_id',''))
    if group not in {str(g['id']) for g in cfg.get('groups',[])}:raise ValueError('故障记录缺少可核验的群号，未猜测修复对象')
    profiling.ensure_schema(db)

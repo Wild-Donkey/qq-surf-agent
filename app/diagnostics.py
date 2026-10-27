@@ -38,7 +38,7 @@ def enqueue(db,cfg,now):
 def snapshot(db,root,job):
     directory=root/'runtime'/'diagnostics'/str(job['id'])
     directory.mkdir(parents=True,exist_ok=True,mode=0o700)
-    for name in ['app.agent.py','app.workflow.py','app.social.py','app.sessions.py','app.memory.py','app.alerts.py','app.supervisor.py','app.usage_report.py','app.onboarding.py','app.diagnostics.py','app.chatgpt_auth.py','app.vision.py','app.participants.py','app.application.py','app.profiling.py','app.profile_service.py','app.model_gate.py','app.repairs.py','app.protocol.py','app.conversation_refs.py','app.understanding.py','app.identities.py','app.orientation.py','app.context_memory.py','app.context_contract.py','schemas/context.schema.json','schemas/memory.schema.json','app.interactions.py','app.clarification.py','app.replies.py','app.memory_store.py','app.memory_maintenance.py','app.profile_service.py','app.internet.py','app.archive.py','app.emoticons.py','app.agent.md']:
+    for name in ['app/agent.py','app/workflow.py','app/social.py','app/sessions.py','app/memory.py','app/alerts.py','app/supervisor.py','app/usage_report.py','app/onboarding.py','app/diagnostics.py','app/chatgpt_auth.py','app/vision.py','app/participants.py','app/application.py','app/profiling.py','app/profile_service.py','app/model_gate.py','app/repairs.py','app/protocol.py','app/conversation_refs.py','app/understanding.py','app/identities.py','app/orientation.py','app/context_memory.py','app/context_contract.py','schemas/context.schema.json','schemas/memory.schema.json','app/interactions.py','app/clarification.py','app/replies.py','app/memory_store.py','app/memory_maintenance.py','app/internet.py','app/archive.py','app/emoticons.py','agent.md']:
         source=root/name
         if source.exists():
             target=directory/name;target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(source,target)
@@ -47,7 +47,7 @@ def snapshot(db,root,job):
     for table in ['model_calls','deliveries','social_jobs']:
         try:counts[table]=[dict(r) for r in db.execute('SELECT status,count(*) AS count FROM '+table+' GROUP BY status')]
         except sqlite3.OperationalError:pass
-    log=root/'runtime'/'app.workflow.log'
+    log=root/'runtime'/'workflow.log'
     # Workflow log emits fixed diagnostics, not raw messages. Keep only known service lines.
     lines=[]
     if log.exists():
@@ -87,12 +87,12 @@ def run_codex(directory,cfg):
     settings=cfg.get('diagnostics',{})
     incident=json.loads((directory/'incident.json').read_text())
     code=incident.get('alert',{}).get('code','')
-    names=['app.workflow.py']
-    if code.startswith('model_'):names=['app.social.py','app.chatgpt_auth.py']
-    elif code.startswith('vision_'):names=['app.vision.py','app.social.py']
-    elif code.startswith('group_bootstrap'):names=['app.onboarding.py','app.profiling.py']
-    elif code.startswith('profile_'):names=['app.profiling.py','app.profile_service.py','app.protocol.py']
-    elif code.startswith(('delivery_','qq_')):names=['app.agent.py','app.workflow.py']
+    names=['app/workflow.py']
+    if code.startswith('model_'):names=['app/social.py','app/chatgpt_auth.py']
+    elif code.startswith('vision_'):names=['app/vision.py','app/social.py']
+    elif code.startswith('group_bootstrap'):names=['app/onboarding.py','app/profiling.py']
+    elif code.startswith('profile_'):names=['app/profiling.py','app/profile_service.py','app/protocol.py']
+    elif code.startswith(('delivery_','qq_')):names=['app/agent.py','app/workflow.py']
     snippets={}
     for name in names:
         path=directory/name
@@ -135,7 +135,7 @@ def tick(db,cfg,root=ROOT,now=None):
         recovery=repairs.perform(db,cfg,root,pending_repair,result)
         if recovery['status']!='deferred':
             with db:db.execute("UPDATE diagnostic_jobs SET status='done' WHERE id=?",(pending_repair['id'],))
-            alerts.record(db,'diagnostic_result','排障'+('完成：' if recovery['status'] in ('repaired','verified') else '未修复：')+recovery['message'],scope=str(pending_repair['id']))
+            alerts.record(db,'diagnostic_result','排障'+('完成：' if recovery['status'] in ('repaired','verified') else '未修复：')+recovery['message'],scope='diagnostics')
         return True
     job=db.execute("SELECT * FROM diagnostic_jobs WHERE status='pending' ORDER BY id LIMIT 1").fetchone()
     if not job:return False
@@ -153,19 +153,19 @@ def tick(db,cfg,root=ROOT,now=None):
             db.execute("UPDATE model_calls SET status='ok',input_tokens=?,output_tokens=? WHERE id=?",(usage.get('input_tokens',usage.get('prompt_tokens',0)),usage.get('output_tokens',usage.get('completion_tokens',0)),call))
         recovery=repairs.perform(db,cfg,root,job,result)
         with db:db.execute('UPDATE diagnostic_jobs SET status=? WHERE id=?',('repair_pending' if recovery['status']=='deferred' else 'done',job['id']))
-        if recovery['status']!='deferred':alerts.record(db,'diagnostic_result','排障'+('完成：' if recovery['status'] in ('repaired','verified') else '未修复：')+recovery['message'],scope=str(job['id']))
+        if recovery['status']!='deferred':alerts.record(db,'diagnostic_result','排障'+('完成：' if recovery['status'] in ('repaired','verified') else '未修复：')+recovery['message'],scope='diagnostics')
     except Exception as exc:
         error=type(exc).__name__
         if isinstance(exc,ValueError):error=str(exc)[:80]
         with db:
             db.execute("UPDATE diagnostic_jobs SET status='failed',error=? WHERE id=?",(error,job['id']))
             db.execute("UPDATE model_calls SET status='failed',error=? WHERE id=?",(error,call))
-        alerts.record(db,'diagnostic_failed','Codex 排障未完成：'+error,scope=str(job['id']))
+        alerts.record(db,'diagnostic_failed','Codex 排障未完成：'+error,scope='diagnostics')
     return True
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--config',type=Path,default=ROOT/'app.workflow.json');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--config',type=Path,default=ROOT/'workflow.json');args=parser.parse_args()
     cfg=json.loads(args.config.read_text());dbpath=Path(cfg['database'])
     if not dbpath.is_absolute():dbpath=args.config.resolve().parent/dbpath
     db=connect(dbpath)

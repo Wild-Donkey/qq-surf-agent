@@ -231,13 +231,13 @@ if __name__=='__main__':
         else:
             if args.model not in {m['slug'] for m in models}:raise SystemExit('请用 --model 指定当前账号模型目录中的模型')
             raw,usage=infer(args.model,'仅输出 JSON：{"call":{"name":"wait","arguments":{"reason":"连接测试"}}}',{'test':True})
-            import social
+            from app import social
             social.validate_decision(raw)
             config=read(ROOT/'llm.local.json',{})
             save(PRIVATE/'previous-llm.json',config)
             save(ROOT/'llm.local.json',{'enabled':True,'provider':'chatgpt','model':args.model,
                                       'max_requests_per_day':config.get('max_requests_per_day',60)})
-            workflow=read(ROOT/'app.workflow.json',{})
+            workflow=read(ROOT/'workflow.json',{})
             if workflow.get('database'):
                 import sqlite3
                 dbpath=Path(workflow['database'])
