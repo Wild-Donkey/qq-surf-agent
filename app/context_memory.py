@@ -1,7 +1,7 @@
 """Task-relevant structured recall, never a per-person utterance transcript."""
 import hashlib,json,re
 from pathlib import Path
-from app import memory_store, identities
+from app import memory_store,identities
 from app.memory import MarkdownMemory,atomic_write,safe_id
 
 CATEGORIES=('facts','boundaries','recent_state','uncertainties')
@@ -54,9 +54,12 @@ def retrieve(cfg,group,payload,query=None,alias=None):
    seen.add(signature);budget-=size;result[category].append(item)
  finally:store.close();registry.close()
  result['usage']='由应用按当前话题主动检索。事实与推测分开；有必要弄清的未知可自然询问当事人，先查已有记忆/回溯，不对无关琐事盘问，不把未答复问题写成事实。'
- from context_contract import check
+ from app.context_contract import check
  check('RecallBundle',result)
  return result
+
+def _dedup_key(key):
+ return key.replace(':bot:',':',1) if key else key
 
 def project(payload):
  """One deduplicated timeline and one group memory block at the model boundary."""
@@ -76,6 +79,7 @@ def project(payload):
  for item in timeline:
   if item.get('event_key') in unread:item['unread']=True
   if str(item.get('message_id','')).startswith('poke:'):item['event_kind']='poke_notice'
+ timeline_keys={_dedup_key(k) for k in positions if k}
  payload['batch_instruction']='通读conversation.timeline的当前局面；unread标记本窗口新增。结合group_context里的结构化记忆与回溯背景，作一次整体决策，不逐条回复。'
  if 'decision_scope' in payload:payload['decision_scope']={**payload['decision_scope'],'context_fields':['conversation.timeline','conversation.reference_evidence','group_context','pending_requests']}
  payload['context_version']=1
@@ -84,11 +88,24 @@ def project(payload):
  group=payload.setdefault('group_context',{})
  group['memory']=payload.pop('recalled_memory',{})
  group['current_state']=payload.pop('previous_group_state','')
- group['older_context']={'windows':payload.pop('relevant_older_windows',[]),'original_records':payload.pop('relevant_archived_messages',[])}
+ group_id=str(payload.get('decision_scope',{}).get('group_id') or group.get('id') or '')
+ archived=[]
+ for row in payload.pop('relevant_archived_messages',[]):
+  mid=row.get('message_id') if isinstance(row,dict) else None
+  key=_dedup_key(group_id+':'+str(mid)) if group_id and mid is not None else None
+  if not key or key not in timeline_keys:archived.append(row)
+ group['older_context']={'windows':payload.pop('relevant_older_windows',[]),'original_records':archived}
  # The old group Markdown and chronological summaries are no longer duplicated inline.
  memory=payload.pop('memory',{})
  if isinstance(memory,dict) and memory.get('persona'):payload.setdefault('bot_identity',{})['persona']=memory['persona']
- if payload.get('orientation_history'):group['retrace_input']=payload.pop('orientation_history')
+ orientation=payload.pop('orientation_history',None)
+ if orientation:
+  rows=orientation.get('messages',[])
+  kept=[row for row in rows if _dedup_key(row.get('event_key')) not in timeline_keys]
+  if len(kept)!=len(rows):
+   orientation=dict(orientation);orientation['messages']=kept
+   coverage=dict(orientation.get('coverage',{}));coverage['deduped_against_timeline']=len(rows)-len(kept);orientation['coverage']=coverage
+  group['retrace_input']=orientation
  return payload
 
 def compact(root):

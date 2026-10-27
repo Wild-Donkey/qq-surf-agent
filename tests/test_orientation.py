@@ -1,7 +1,7 @@
 import json,tempfile,time,unittest
 from pathlib import Path
 from unittest.mock import patch
-from app import archive, orientation, application, sessions, workflow, social, identities
+from app import archive,orientation,application,sessions,workflow,social,identities
 
 class OrientationTests(unittest.TestCase):
  def test_archive_group_cutoff_and_evidence_validation(self):
@@ -44,6 +44,32 @@ class OrientationTests(unittest.TestCase):
     social.tick(db,cfg)
    self.assertEqual(call.call_count,2);self.assertEqual(db.execute('select count(*) from deliveries').fetchone()[0],1)
    db.close()
+ def test_prepare_carries_mentions_and_resolved_reply_to(self):
+  with tempfile.TemporaryDirectory() as root:
+   cfg={'context_dir':root};disk=archive.Archive(root)
+   disk.record({'group_id':1,'user_id':7,'message_id':1,'time':100,'sender':{'card':'阿甲'},'message':[{'type':'text','data':{'text':'甲说旧电脑在线'}}]})
+   disk.record({'group_id':1,'user_id':8,'message_id':2,'time':101,'sender':{'card':'阿乙'},'message':[{'type':'text','data':{'text':'引用前文'}},{'type':'reply','data':{'id':1}},{'type':'at','data':{'qq':'7'}}]})
+   disk.record({'group_id':1,'user_id':8,'message_id':3,'time':102,'sender':{'card':'阿乙'},'message':[{'type':'text','data':{'text':'引用缺失'}},{'type':'reply','data':{'id':99}}]})
+   disk.close()
+   history=orientation.prepare(cfg,'1',150,[])
+   bymid={m['event_key']:m for m in history['messages']}
+   self.assertEqual(bymid['1:2']['mentions'],['7'])
+   quote=bymid['1:2']['reply_to']
+   self.assertEqual(quote['speaker'],'7');self.assertEqual(quote['nickname'],'阿甲')
+   self.assertIn('旧电脑',quote['text']);self.assertTrue(quote['available'])
+   missing=bymid['1:3']['reply_to']
+   self.assertFalse(missing['available']);self.assertEqual(missing['speaker'],'unknown')
+ def test_retrace_search_resolves_reply_to_quote(self):
+  with tempfile.TemporaryDirectory() as root:
+   cfg={'context_dir':root};disk=archive.Archive(root)
+   disk.record({'group_id':1,'user_id':7,'message_id':1,'time':100,'sender':{'card':'阿甲'},'message':[{'type':'text','data':{'text':'甲说旧电脑在线'}}]})
+   disk.record({'group_id':1,'user_id':8,'message_id':5,'time':101,'sender':{'card':'阿乙'},'message':[{'type':'text','data':{'text':'旧电脑现在还在线吗'}},{'type':'reply','data':{'id':1}}]})
+   disk.close()
+   payload={'recent_target_messages':[]}
+   application.read(None,cfg,'1',payload,{'name':'retrace_context','arguments':{'query':'旧电脑'}})
+   quoted=[m for m in payload['orientation_history']['messages'] if isinstance(m.get('reply_to'),dict) and m['reply_to'].get('available')]
+   self.assertTrue(quoted);self.assertEqual(quoted[0]['reply_to']['speaker'],'7')
+   self.assertIn('旧电脑',quoted[0]['reply_to']['text'])
  def test_reply_is_blocked_if_preflight_was_skipped(self):
   with tempfile.TemporaryDirectory() as root:
    cfg={'bot_id':'99','mode':'live','groups':[{'id':'1','name':'A'}],'context_dir':root,'interaction':{'enabled':True,'quiet_seconds':0,'orientation_enabled':True}}

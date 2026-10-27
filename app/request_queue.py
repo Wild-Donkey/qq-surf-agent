@@ -43,14 +43,23 @@ def pending(db,group):
 
 
 def sync(db,cfg,now=None):
- import participants
- import moderation
+ from app import participants
+ from app import moderation
  now=time.time() if now is None else now
+ expiry=now-cfg.get('interaction',{}).get('request_expiry_seconds',86400)
  with db:
+  # Expire stale pending/waiting_info requests so they don't accumulate forever.
+  db.execute("UPDATE user_requests SET status='cancelled' WHERE status IN ('pending','waiting_info') AND created<?",(expiry,))
   for row in db.execute("SELECT r.event_key,r.outcome,d.status FROM user_requests r JOIN deliveries d ON d.id=r.delivery_id WHERE r.status='queued'").fetchall():
    state={'sent':'waiting_info' if row['outcome']=='needs_info' else 'done','already_seen':'done','uncertain':'uncertain','failed':'failed','cancelled':'cancelled','superseded':'pending','expired':'pending','blocked_muted':'pending'}.get(row['status'])
    if state:db.execute('UPDATE user_requests SET status=?,next_attempt=? WHERE event_key=?',(state,now+5,row['event_key']))
-  for row in db.execute("SELECT event_key,group_id FROM user_requests WHERE status='pending' AND next_attempt<=?",(now,)).fetchall():
+  max_reply_age=cfg.get('interaction',{}).get('max_reply_age_seconds',180)
+  for row in db.execute("SELECT event_key,group_id,created FROM user_requests WHERE status='pending' AND next_attempt<=?",(now,)).fetchall():
+   # Stale requests (older than max_reply_age_seconds) are cancelled so they
+   # don't keep re-queueing decided social_jobs and wasting model calls.
+   if now-row['created']>max_reply_age:
+    db.execute("UPDATE user_requests SET status='cancelled' WHERE event_key=?",(row['event_key'],))
+    continue
    if moderation.is_muted(db,row['group_id'],now):continue
    pause=db.execute('SELECT until_time FROM operator_pause WHERE group_id=?',(row['group_id'],)).fetchone()
    if pause and pause[0]>now:continue

@@ -161,7 +161,7 @@ class MemoryStore:
   with (self.root/'structured-memory.lock').open('a') as lock:
    fcntl.flock(lock,fcntl.LOCK_EX)
    for row in self.db.execute('SELECT * FROM documents'+('' if force else ' WHERE dirty=1')).fetchall():
-    doc=json.loads(row['body']);atomic_write(self.path(row['kind'],row['identity'],'json'),json.dumps(doc,ensure_ascii=False,indent=2)+'\n');atomic_write(self.path(row['kind'],row['identity']),render(doc))
+    doc=json.loads(row['body']);atomic_write(self.path(row['kind'],row['identity'],'json'),json.dumps(doc,ensure_ascii=False,indent=2)+'\n');atomic_write(self.path(row['kind'],row['identity']),render(doc,self.root))
     with self.db:self.db.execute('UPDATE documents SET dirty=0 WHERE kind=? AND identity=? AND revision=?',(row['kind'],row['identity'],row['revision']))
    fcntl.flock(lock,fcntl.LOCK_UN)
  @retry_conflicts
@@ -172,7 +172,7 @@ class MemoryStore:
    now=time.time();aliases.append({'text':name,'evidence':[group+':'+str(event['message_id'])],'confidence':1,'first_seen':now,'last_seen':now,'source':'bridge','status':'supported'});self.commit([doc],'bridge')
   elif new_group:self.commit([doc],'bridge')
  def verify_evidence(self,group,patch):
-  disk_path=self.root/'app.archive.sqlite3';disk=sqlite3.connect(disk_path) if disk_path.exists() else None
+  disk_path=self.root/'archive.sqlite3';disk=sqlite3.connect(disk_path) if disk_path.exists() else None
   try:
    for values in patch.values():
     if not isinstance(values,list):continue
@@ -214,38 +214,78 @@ class MemoryStore:
 
 def plain(value):return re.sub(r'\s+',' ',str(value)).replace('<!--','&lt;!--').replace('-->','--&gt;').strip()
 def coverage_text(value):return '记录 '+str(value['message_count'])+' 条；取样内读取完成：'+('是' if value['complete'] else '未核验')+'。'+plain(value['note'])+'\n\n时间范围：'+str(value['time_start'])+' — '+str(value['time_end'])
-def fact_lines(values):
+
+_ARCHIVE_CACHE=None
+def _archive(root):
+ global _ARCHIVE_CACHE
+ if _ARCHIVE_CACHE is None or _ARCHIVE_CACHE[0]!=str(root):
+  db=sqlite3.connect(Path(root)/'archive.sqlite3') if (Path(root)/'archive.sqlite3').exists() else None
+  _ARCHIVE_CACHE=(str(root),db)
+ return _ARCHIVE_CACHE[1]
+
+def quote_evidence(keys,root):
+ """Return a human-readable quote of original message text for evidence keys.
+
+ Falls back to the raw event_key only when the message cannot be found.
+ """
+ if not keys:return '尚无可核验原话'
+ db=_archive(root)
+ if db is None:return '、'.join(keys)
+ quotes=[]
+ for key in keys:
+  try:
+   gid,mid=key.split(':',1)
+   row=db.execute('SELECT text FROM messages WHERE group_id=? AND message_id=?',(gid,mid)).fetchone()
+  except (ValueError,sqlite3.Error):row=None
+  if row and row[0]:
+   snippet=plain(row[0])[:60]
+   quotes.append('「'+snippet+'」')
+  else:
+   quotes.append(key)
+ return '、'.join(quotes)
+
+def fact_lines(values,root=None):
  confirmed=[];uncertain=[]
  for value in values:
   text=value.get('text') or (value['subject_id']+' → '+value['object_id']+'：'+value['relation'])
-  evidence='、'.join(value['evidence']) or '尚无可核验原话'
-  line='- '+plain(text)+'\n  - 证据：'+evidence+'；置信度 '+str(value['confidence'])+'；'+value['status']
+  evidence=quote_evidence(value['evidence'],root) if root else ('、'.join(value['evidence']) or '尚无可核验原话')
+  line='- '+plain(text)+'\n  - 依据：'+evidence+'；置信度 '+str(value['confidence'])+'；'+value['status']
   (confirmed if value['status']=='supported' and value['confidence']>=.85 and value['evidence'] else uncertain).append(line)
  result=[]
  if confirmed:result.append('已核实：\n'+'\n'.join(confirmed))
  if uncertain:result.append('待核实（不是已知事实）：\n'+'\n'.join(uncertain))
- return '\n\n'.join(result) if result else '- 未知 / 尚无记录。'
-def render_fields(portrait,kind):
+ return '\n\n'.join(result)
+def render_fields(portrait,kind,root=None):
  names={'summary':'概况','topics':'长期话题','communication':'交流方式','rules':'明确群规','aliases':'称呼','style':'表达方式','interests':'反复出现的话题与偏好','relationships':'互动关系','boundaries':'意愿与边界','uncertainties':'待确认与冲突'}
- return '\n\n'.join('### '+names[key]+'\n\n'+(plain(value) if isinstance(value,str) else fact_lines(value)) for key,value in portrait.items())
-def render_state(state):
+ parts=[]
+ for key,value in portrait.items():
+  body=plain(value) if isinstance(value,str) else fact_lines(value,root)
+  if not body:continue
+  parts.append('### '+names[key]+'\n\n'+body)
+ return '\n\n'.join(parts)
+def render_state(state,root=None):
  labels={'summary':'当前概况','current_topics':'当前话题','open_threads':'未解决事项','decisions':'已明确的约定','boundaries':'当前互动边界'}
- return '\n\n'.join('### '+labels[key]+'\n\n'+(plain(value) if isinstance(value,str) else fact_lines(value)) for key,value in state.items())
-def render_group_scope(group,scope):
+ parts=[]
+ for key,value in state.items():
+  body=plain(value) if isinstance(value,str) else fact_lines(value,root)
+  if not body:continue
+  parts.append('### '+labels[key]+'\n\n'+body)
+ return '\n\n'.join(parts)
+def render_group_scope(group,scope,root=None):
  """Compact per-group section in people.md: only group-specific relationships + coverage, not a full portrait."""
  rels=scope['portrait'].get('relationships',[])
  state_summary=plain(scope['state'].get('summary',''))
  parts=['### 样本覆盖\n\n'+coverage_text(scope['coverage'])]
- if rels:parts.append('### 本群特殊关系\n\n'+fact_lines(rels))
+ if rels:parts.append('### 本群特殊关系\n\n'+fact_lines(rels,root))
  if state_summary:parts.append('### 本群近期概况\n\n'+state_summary)
  return '\n<!-- group-scope:'+group+':start -->\n## 本群记录 '+group+'\n\n'+'\n\n'.join(parts)+'\n<!-- group-scope:'+group+':end -->\n'
-def render(doc):
+def render(doc,root=None):
  header='# '+('群记忆 '+doc['group_id'] if doc['kind']=='group' else '成员记忆 '+doc['user_id'])+'\n\nSchema v1；修订 '+str(doc['revision'])+'。此 Markdown 由应用生成，结构化数据见同目录 JSON。\n'
  if doc['kind']=='group':
-  body='\n<!-- portrait:start -->\n## 群画像\n\n'+render_fields(doc['portrait'],'group')+'\n\n### 样本覆盖\n\n'+coverage_text(doc['coverage'])+'\n<!-- portrait:end -->\n\n<!-- conversation-state:start -->\n## 持续对话状态\n\n'+render_state(doc['state'])+'\n<!-- conversation-state:end -->\n'
+  body='\n<!-- portrait:start -->\n## 群画像\n\n'+render_fields(doc['portrait'],'group',root)+'\n\n### 样本覆盖\n\n'+coverage_text(doc['coverage'])+'\n<!-- portrait:end -->\n\n<!-- conversation-state:start -->\n## 持续对话状态\n\n'+render_state(doc['state'],root)+'\n<!-- conversation-state:end -->\n'
  else:
-  body='\n<!-- person-portrait:start -->\n## 人物画像（跨群累积）\n\n'+render_fields(doc['portrait'],'person')+'\n<!-- person-portrait:end -->\n\n<!-- person-state:start -->\n## 人物近期状态\n\n'+render_state(doc['state'])+'\n<!-- person-state:end -->\n\n<!-- account-kind:start -->\n## 账号类型（应用管理）\n\n'+('类型：'+doc['account']['kind']+'；置信度：'+str(doc['account']['confidence'])+'；来源：'+doc['account']['source']+'\n\n依据：'+plain(doc['account']['reason']))+'\n<!-- account-kind:end -->\n'
-  for group,scope in sorted(doc['groups'].items()):body+=render_group_scope(group,scope)
+  body='\n<!-- person-portrait:start -->\n## 人物画像（跨群累积）\n\n'+render_fields(doc['portrait'],'person',root)+'\n<!-- person-portrait:end -->\n\n<!-- person-state:start -->\n## 人物近期状态\n\n'+render_state(doc['state'],root)+'\n<!-- person-state:end -->\n\n<!-- account-kind:start -->\n## 账号类型（应用管理）\n\n'+('类型：'+doc['account']['kind']+'；置信度：'+str(doc['account']['confidence'])+'；来源：'+doc['account']['source']+'\n\n依据：'+plain(doc['account']['reason']))+'\n<!-- account-kind:end -->\n'
+  for group,scope in sorted(doc['groups'].items()):body+=render_group_scope(group,scope,root)
  return header+body+'\n## 手工补充\n\n'+doc['manual_notes']+'\n'
 
 

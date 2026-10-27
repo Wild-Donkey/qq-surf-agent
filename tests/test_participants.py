@@ -101,7 +101,7 @@ class IdentityTests(unittest.TestCase):
    self.assertEqual(r.alias('1'),'老崔');self.assertEqual(r.resolve('老崔'),'1');r.close()
  def test_initial_uses_account_name_not_card(self):
   with tempfile.TemporaryDirectory() as root:
-   db=sqlite3.connect(Path(root)/'app.archive.sqlite3');db.execute('CREATE TABLE messages(id INTEGER,user_id TEXT,nickname TEXT,raw_json TEXT)')
+   db=sqlite3.connect(Path(root)/'archive.sqlite3');db.execute('CREATE TABLE messages(id INTEGER,user_id TEXT,nickname TEXT,raw_json TEXT)')
    db.execute('INSERT INTO messages VALUES (1,?,?,?)',('1','群名片',json.dumps({'sender':{'nickname':'MyCall'}})));db.commit();db.close()
    r=identities.Registry(root);self.assertEqual(r.alias('1','群名片'),'MyCall');r.close()
  def test_transport_compact_quotes_history_and_on_demand_details(self):
@@ -188,7 +188,7 @@ if __name__ == '__main__':
 
 class WorkerRoleContextTests(unittest.TestCase):
  def test_compact_handles_retain_owner_peer_bot_and_self_identity(self):
-  import identities
+  from app import identities
   with tempfile.TemporaryDirectory() as root:
    payload={'_identity_root':root,'_identity_bot':'9','_identity_owner':'1',
     'member_profiles':[{'id':'1','current_judgment':{'kind':'human','source':'config'}},{'id':'2','current_judgment':{'kind':'bot','source':'app_rules'}}],

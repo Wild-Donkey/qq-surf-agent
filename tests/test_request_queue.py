@@ -1,7 +1,7 @@
 import json,tempfile,time,unittest
 from unittest.mock import patch
 from pathlib import Path
-from app import request_queue as rq, workflow, social, application
+from app import request_queue as rq,workflow,social,application
 from app.sessions import SessionPool
 from app.memory import MarkdownMemory
 class RequestQueueTests(unittest.TestCase):
@@ -65,7 +65,7 @@ class RequestQueueTests(unittest.TestCase):
   self.assertEqual(rq.pending(self.db,'1'),[])
 
  def test_explicit_forward_uses_pinned_original_context_not_new_topic(self):
-  import merged_forward as mf
+  from app import merged_forward as mf
   self.add(1,'当时的铺垫',self.now-1100);self.add(2,'当时的包袱',self.now-1099)
   self.add(3,'搬到棺材房给大伙看看',self.now-1000);self.add(4,'后来已经换了话题',self.now-1)
   event={'post_type':'message','message_type':'group','group_id':2,'user_id':8,'message_id':20,'time':self.now-2,'message':[{'type':'text','data':{'text':'隔壁活跃'}}]}
@@ -79,7 +79,7 @@ class RequestQueueTests(unittest.TestCase):
   self.assertEqual([p['data']['id'] for p in api.call_args.args[2]['messages']],['1','2'])
 
  def test_mute_keeps_request_without_model_requeue(self):
-  import moderation
+  from app import moderation
   self.add(1,'你是谁')
   with self.db:self.db.execute("UPDATE social_jobs SET status='decided'")
   event={'post_type':'notice','notice_type':'group_ban','sub_type':'ban','group_id':1,'user_id':99,'operator_id':3,'time':self.now,'duration':500}

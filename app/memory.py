@@ -48,7 +48,7 @@ def excerpt(text,limit=180):
 class MarkdownMemory:
     def __init__(self,root):
         self.root=Path(root).resolve();self.root.mkdir(parents=True,exist_ok=True)
-        self.db=sqlite3.connect(str(self.root/'app.memory.sqlite3'),timeout=20)
+        self.db=sqlite3.connect(str(self.root/'memory.sqlite3'),timeout=20)
         self.db.row_factory=sqlite3.Row
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.executescript('''
@@ -82,7 +82,7 @@ class MarkdownMemory:
         parts=event.get('message',[])
         if not isinstance(parts,list):return False
         if (self.root/'structured_memory.sqlite3').exists():
-            from memory_store import MemoryStore
+            from app.memory_store import MemoryStore
             store=MemoryStore(self.root)
             try:store.observe_member(event)
             finally:store.close()
@@ -105,7 +105,7 @@ class MarkdownMemory:
 
     def conversation_state(self,group):
         if (self.root/'structured_memory.sqlite3').exists():
-            from memory_store import MemoryStore
+            from app.memory_store import MemoryStore
             store=MemoryStore(self.root)
             try:return store.load('group',group)['state']['summary']
             finally:store.close()
@@ -121,7 +121,7 @@ class MarkdownMemory:
             if state:self.db.execute('INSERT OR REPLACE INTO conversation_states VALUES (?,?,?)',(group,state,now))
             if summary:self.db.execute('INSERT OR REPLACE INTO conversation_episodes VALUES (?,?,?,?,?)',(key,group,batch[0]['created'],batch[-1]['created'],summary))
         if (self.root/'structured_memory.sqlite3').exists():
-            from memory_store import MemoryStore
+            from app.memory_store import MemoryStore
             store=MemoryStore(self.root)
             try:
                 if state and store.load('group',group)['state']['summary']!=state:store.state_updates(group,{'summary':state},[],'worker')
@@ -148,12 +148,18 @@ class MarkdownMemory:
     def recall_episodes(self,group,query,limit=4):
         terms=self.search_terms(query)
         rows=self.db.execute('SELECT started,ended,summary FROM conversation_episodes WHERE group_id=? ORDER BY ended DESC LIMIT 5000',(safe_id(group),)).fetchall()
+        labels={}
+        for r in self.db.execute('SELECT user_id,nickname FROM observations WHERE group_id=?',(safe_id(group),)):
+            label=(r['nickname'] or '').strip()
+            if label and label!=r['user_id']:labels.setdefault(r['user_id'],label)
+        def relabel(summary):
+            return re.sub(r'(?:^|(?<=[；;]))(\d{5,12})：',lambda m:labels.get(m.group(1),m.group(1))+'：',summary)
         ranked=[]
         for row in rows:
             overlap=terms & self.search_terms(row['summary'])
             score=sum(3 if len(term)>1 else 0.5 for term in overlap)
             if score:ranked.append((score,row['ended'],row))
-        return [{'started':row['started'],'ended':row['ended'],'summary':row['summary'][:1000]} for _,_,row in sorted(ranked,key=lambda x:(x[0],x[1]),reverse=True)[:limit]]
+        return [{'started':row['started'],'ended':row['ended'],'summary':relabel(row['summary'])[:1000]} for _,_,row in sorted(ranked,key=lambda x:(x[0],x[1]),reverse=True)[:limit]]
 
     def flush(self,groups):
         group_names={safe_id(g['id']):g['name'] for g in groups}

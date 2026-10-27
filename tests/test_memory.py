@@ -62,7 +62,7 @@ class MemorySchemaTests(unittest.TestCase):
   self.store.state_updates('1',None,[('7',{'summary':'群一的待办'},'group')]);self.store.state_updates('2',None,[('7',{'summary':'群二的私有状态'},'group')])
   text=application.member_markdown({'context_dir':str(self.root)},'1','7');self.assertIn('群一的待办',text);self.assertNotIn('群二的私有状态',text)
  def test_application_ingest_inject_and_structured_state_round_trip(self):
-  import workflow,social
+  from app import workflow,social
   cfg={'bot_id':'99','context_dir':str(self.root),'groups':[{'id':'1','name':'A'}],'interaction':{'enabled':True},'durable_archive':{'enabled':True},'memory_schema':{'enabled':True},'human_presence':{'known_humans':['7']}}
   db=workflow.connect(':memory:');event={'post_type':'message','message_type':'group','group_id':1,'message_id':10,'user_id':7,'time':time.time(),'sender':{'nickname':'阿明'},'message':[{'type':'text','data':{'text':'叫我阿明'}}]}
   workflow.ingest(db,event,cfg)
@@ -110,7 +110,7 @@ class MaintenanceTests(unittest.TestCase):
   session=GroupSession('1',100,[{'text':'old info','time':1}]);pool.groups['1']=session
   pool._refresh(self.db,session,self.cfg)
   self.assertIn('before_compression',json.loads(self.job()['reasons']))
-  from memory import MarkdownMemory
+  from app.memory import MarkdownMemory
   memory=MarkdownMemory(self.tmp.name)
   try:pool.flush_active(memory)
   finally:memory.close()
@@ -145,7 +145,7 @@ class MaintenanceTests(unittest.TestCase):
   self.assertEqual(model['reasoning_effort'],'none')
   self.assertNotIn('Person',payload['schema'])
  def test_provider_refusal_records_gap_without_repeating_same_batch(self):
-  from protocol import ProtocolError
+  from app.protocol import ProtocolError
   self.record('a')
   with patch('app.social.load_model',return_value={}),patch('app.model_gate.reserve',return_value=1),patch('app.social.generate_text',side_effect=ProtocolError('model_response','model_content_filtered')):
    with self.assertRaises(ProtocolError):mm.tick(self.db,self.cfg)
@@ -164,11 +164,14 @@ class MaintenanceTests(unittest.TestCase):
    row=db.execute('SELECT error,details FROM failures').fetchone()
    self.assertIn('invalid_memory_bundle',row['error']);self.assertEqual(json.loads(row['details'])['group_id'],'1')
   finally:db.close()
- def test_atomic_bundle_rejects_wrong_evidence(self):
+ def test_atomic_bundle_skips_wrong_evidence(self):
   self.record('a');store=memory_store.MemoryStore(self.tmp.name)
   try:
-   with self.assertRaises(ValueError):mm.apply(store,'1',{'group':{'state':{'summary':'must not commit'}},'members':[{'user_id':'2','state':{'current_topics':[{'text':'x','evidence':['1:fake'],'confidence':1}]}}]},[{'event_key':'1:a','speaker':'2'}])
-   self.assertEqual(store.load('group','1')['revision'],0)
+   # Evidence '1:fake' is not in the current batch; it should be filtered
+   # out and the fact dropped, not raise. Valid group state still commits.
+   mm.apply(store,'1',{'group':{'state':{'summary':'committed ok'}},'members':[{'user_id':'2','state':{'current_topics':[{'text':'x','evidence':['1:fake'],'confidence':1}]}}]},[{'event_key':'1:a','speaker':'2'}])
+   self.assertEqual(store.load('group','1')['state']['summary'],'committed ok')
+   self.assertEqual(store.load('person','2')['state']['current_topics'],[])
   finally:store.close()
 
 
@@ -183,6 +186,19 @@ class ArchiveTests(unittest.TestCase):
    self.assertEqual(a.window('1',0)['total_messages'],1)
    a.add_visual('1','2','蓝色猫窝')
    self.assertTrue(a.search('1','猫窝'));a.close()
+ def test_recall_episodes_relabels_legacy_qq_speakers(self):
+  from app.memory import MarkdownMemory
+  with tempfile.TemporaryDirectory() as tmp:
+   memory=MarkdownMemory(tmp)
+   try:
+    self.assertTrue(memory.observe({'message_type':'group','group_id':1,'user_id':1234567,'message_id':1,
+      'sender':{'nickname':'阿甲'},'message':[{'type':'text','data':{'text':'编程真有意思'}}]},99))
+    with memory.db:
+     memory.db.execute('INSERT INTO conversation_episodes VALUES (?,?,?,?,?)',
+       ('k1','1',1,2,'1234567：聊了编程；7654321：别的事'))
+    rows=memory.recall_episodes('1','编程')
+    self.assertEqual(rows[0]['summary'],'阿甲：聊了编程；7654321：别的事')
+   finally:memory.close()
  def test_backfill_is_enriched_by_original_mentions(self):
   with tempfile.TemporaryDirectory() as root:
    a=Archive(root);e={'group_id':1,'message_id':2,'user_id':'unknown','message':[{'type':'text','data':{'text':'清理上下文'}}],'archive_origin':'working_cache_backfill'}

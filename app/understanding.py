@@ -4,7 +4,7 @@ from pathlib import Path
 from app.memory import atomic_write,safe_id
 from app import service_log
 
-CONTRACT={'summary':'仅本窗口新增事实/话题变化，1至2句尽量120字内；无新增可留空，不复述旧摘要，不写是否该接话','images':[{'reference':'实际附图引用','description':'本轮首次理解或纠正的可见画面与文字，尽量200字内，不重复旧图说明','is_sticker':False,'tags':[]}],'uncertainties':['影响事实判断的具体未知，无则空数组；不填是否期待接话、是否抛梗等社交猜测']}
+CONTRACT={'summary':'仅本窗口新增事实/话题变化，1至2句尽量120字内；无新增可留空，不复述旧摘要，不写是否该接话','images':[{'reference':'实际附图引用','description':'本轮首次理解或纠正的可见画面与文字，尽量200字内，不重复旧图说明','is_sticker':False,'tags':[]}],'uncertainties':['影响事实判断的具体未知，无则空数组；不填是否期待接话、是否抛梗等社交猜测；已经问过且无人回应的悬案不要再列入（比如你自己说过"问两回了没人理"的指代），把位置让给本窗口真正的新疑点']}
 
 def connect(cfg):
  root=Path(cfg['context_dir']);root.mkdir(parents=True,exist_ok=True)
@@ -50,7 +50,7 @@ def save(cfg,group,payload,value,db=None):
  slot=payload.get('request_slot')
  if not slot or str(slot['group_id'])!=str(group):raise ValueError('understanding_without_request_slot')
  # Reuse image provenance validation, independently of unrelated member patches.
- import application
+ from app import application
  offset=len(payload.get('_saved_image_annotations',[]))
  application.update_states(cfg,group,payload,{'images':images},db)
  saved=payload.get('_saved_image_annotations',[])[offset:]
@@ -65,7 +65,7 @@ def save(cfg,group,payload,value,db=None):
   merged={str(note.get('event_key') or '')+':'+str(note.get('media_key') or note['reference']):note for note in prior.get('images',[])}
   for note in saved:merged[str(note.get('event_key') or '')+':'+str(note.get('media_key') or note['reference'])]=note
   body['images']=list(merged.values())[-12:]
-  from context_contract import check
+  from app.context_contract import check
   check('Understanding',body)
   encoded=json.dumps(body,ensure_ascii=False,sort_keys=True)
   with store:store.execute("UPDATE windows SET body=?,status='saved',updated=? WHERE request_id=?",(encoded,time.time(),slot['request_id']))

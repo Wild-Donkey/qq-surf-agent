@@ -8,12 +8,22 @@ def prepare(cfg,group,cutoff,fallback):
  since=cutoff-float(settings.get('orientation_lookback_seconds',7200))
  limit=min(1000,max(1,int(settings.get('orientation_messages',300))))
  budget=max(2000,min(60000,int(settings.get('orientation_char_budget',24000))))
- path=root/'app.archive.sqlite3';rows=[];total=0
+ path=root/'archive.sqlite3';rows=[];total=0;quotes={}
  if path.exists():
   db=sqlite3.connect(path);db.row_factory=sqlite3.Row
   try:
    total=db.execute('SELECT count(*) FROM messages WHERE group_id=? AND created>=? AND created<=?',(str(group),since,cutoff)).fetchone()[0]
-   rows=[dict(r) for r in db.execute('SELECT message_id,user_id,nickname,text,reply_to,created FROM messages WHERE group_id=? AND created>=? AND created<=? ORDER BY created DESC,id DESC LIMIT ?',(str(group),since,cutoff,limit))]
+   rows=[dict(r) for r in db.execute('SELECT message_id,user_id,nickname,text,reply_to,mentions,created FROM messages WHERE group_id=? AND created>=? AND created<=? ORDER BY created DESC,id DESC LIMIT ?',(str(group),since,cutoff,limit))]
+   mids=list({str(r['reply_to']) for r in rows if r['reply_to']})
+   if mids:
+    placeholders=','.join('?' for _ in mids)
+    found={str(r['message_id']):dict(r) for r in db.execute('SELECT message_id,user_id,nickname,text,created FROM messages WHERE group_id=? AND message_id IN ('+placeholders+')',(str(group),*mids))}
+    for mid in mids:
+     saved=found.get(mid)
+     if saved:
+      quotes[mid]={'message_id':mid,'event_key':str(group)+':'+mid,'speaker':saved['user_id'],'nickname':saved['nickname'],'time':saved['created'],'text':saved['text'][:1200],'available':True}
+     else:
+      quotes[mid]={'message_id':mid,'event_key':str(group)+':'+mid,'speaker':'unknown','nickname':'未知作者','time':None,'text':'[引用原文未缓存，不猜测]','available':False}
    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='visual_notes'").fetchone():
     for row in rows:row['visual_notes']=[r[0] for r in db.execute('SELECT description FROM visual_notes WHERE group_id=? AND message_id=? LIMIT 4',(str(group),row['message_id']))]
   finally:db.close()
@@ -22,7 +32,10 @@ def prepare(cfg,group,cutoff,fallback):
   for row in rows:
    text=row['text'][:3000]
    if used+len(text)>budget:break
-   used+=len(text);messages.append({'event_key':str(group)+':'+str(row['message_id']),'speaker':row['user_id'],'nickname':row['nickname'],'text':text,'reply_message_id':row['reply_to'],'time':row['created'],'visual_notes':row.get('visual_notes',[])})
+   used+=len(text)
+   item={'event_key':str(group)+':'+str(row['message_id']),'speaker':row['user_id'],'nickname':row['nickname'],'text':text,'time':row['created'],'visual_notes':row.get('visual_notes',[]),'mentions':json.loads(row['mentions'] or '[]')}
+   if row['reply_to']:item['reply_to']=quotes.get(str(row['reply_to']),{'message_id':str(row['reply_to']),'event_key':str(group)+':'+str(row['reply_to']),'speaker':'unknown','nickname':'未知作者','time':None,'text':'[引用原文未缓存，不猜测]','available':False})
+   messages.append(item)
   messages.reverse()
  else:
   messages=[dict(row) for row in fallback];total=len(messages)
@@ -55,9 +68,9 @@ def save(cfg,group,payload,args):
   ref['evidence_event_keys']=evidence
   if ref['certainty']=='confirmed' and not evidence:ref['certainty']='tentative'
  value={'schema_version':1,'topics':topics,'referents':refs,'open_interactions':interactions,'coverage':payload['orientation_history']['coverage'],'updated':time.time()}
- from context_contract import check
+ from app.context_contract import check
  check('Orientation',value)
- atomic_write(Path(cfg['context_dir'])/'groups'/safe_id(group)/'app.orientation.json',json.dumps(value,ensure_ascii=False,indent=2)+'\n')
+ atomic_write(Path(cfg['context_dir'])/'groups'/safe_id(group)/'orientation.json',json.dumps(value,ensure_ascii=False,indent=2)+'\n')
  payload.setdefault('group_context',{})['orientation']=value;payload['orientation_required']=False
  payload.pop('orientation_history',None)
  return {'saved':True,'orientation':value,'instruction':'预读完成。现在结合当前窗口决定是否自然参与；不要把背景笔记当回复，不补答过时消息。'}

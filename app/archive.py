@@ -9,6 +9,61 @@ import time
 from app import emoticons
 
 
+_nickname_cache={}
+
+def nickname_for(root,group_id,user_id):
+    """Return the most recent nickname for a user in a group, falling back to the raw id."""
+    user_id=str(user_id)
+    if user_id in ('all','0'):return '全体成员'
+    key=(str(root),str(group_id),user_id)
+    cached=_nickname_cache.get(key)
+    if cached is not None:return cached
+    name=user_id
+    try:
+        archive=Archive(root)
+        try:
+            row=archive.db.execute('SELECT nickname FROM messages WHERE group_id=? AND user_id=? ORDER BY id DESC LIMIT 1',(str(group_id),user_id)).fetchone()
+            if row and row['nickname']:name=row['nickname']
+        finally:archive.close()
+    except Exception:pass
+    if len(_nickname_cache)>2000:_nickname_cache.clear()
+    _nickname_cache[key]=name
+    return name
+
+
+def render_text(parts,group_id,root):
+    """Convert OneBot message parts to readable text, restoring @mentions as @nickname
+    so the model can see who was addressed instead of a bare qq number."""
+    if not isinstance(parts,list):return ''
+    chunks=[]
+    for p in parts:
+        if not isinstance(p,dict):continue
+        t=p.get('type');data=p.get('data',{})
+        if not isinstance(data,dict):continue
+        if t=='text':chunks.append(str(data.get('text','')))
+        elif t=='at':
+            qq=str(data.get('qq',''))
+            chunks.append('@'+nickname_for(root,group_id,qq))
+    return '\n'.join(c for c in chunks if c!='')
+
+
+def extract_forward_text(parts):
+    """Extract readable text from merged-forward (type=forward) segments.
+    Returns a string like '[nickname]: text\\n...' or empty string if none."""
+    lines=[]
+    for p in parts:
+        if not isinstance(p,dict) or p.get('type')!='forward':continue
+        content=p.get('data',{}).get('content') or []
+        for msg in content:
+            if not isinstance(msg,dict):continue
+            sender=msg.get('sender') or {}
+            name=str(sender.get('card') or sender.get('nickname') or msg.get('user_id',''))
+            segs=msg.get('message') if isinstance(msg.get('message'),list) else []
+            text=''.join(str(s.get('data',{}).get('text','')) for s in segs if isinstance(s,dict) and s.get('type')=='text').strip()
+            if text:lines.append(f'[{name}]: {text}')
+    return '\n'.join(lines)
+
+
 def terms(text):
     result=set(re.findall(r'[A-Za-z0-9_]{2,}',text.lower()))
     for run in re.findall(r'[\u4e00-\u9fff]+',text):
@@ -20,7 +75,7 @@ def terms(text):
 class Archive:
     def __init__(self,root):
         self.root=Path(root).resolve();self.root.mkdir(parents=True,exist_ok=True)
-        self.db=sqlite3.connect(self.root/'app.archive.sqlite3',timeout=20)
+        self.db=sqlite3.connect(self.root/'archive.sqlite3',timeout=20)
         self.db.row_factory=sqlite3.Row;self.db.execute('PRAGMA journal_mode=WAL')
         self.db.executescript('''CREATE TABLE IF NOT EXISTS messages(
           id INTEGER PRIMARY KEY,group_id TEXT,message_id TEXT,user_id TEXT,nickname TEXT,
@@ -42,7 +97,9 @@ class Archive:
         group=str(event.get('group_id',''));mid=str(event.get('message_id',''))
         if not group.isdigit() or not mid or mid=='None':return False
         parts=event.get('message') if isinstance(event.get('message'),list) else []
-        text='\n'.join(str(p.get('data',{}).get('text','')) for p in parts if isinstance(p,dict) and p.get('type')=='text')
+        text=render_text(parts,group,self.root)
+        fwd_text=extract_forward_text(parts)
+        if fwd_text:text=(text+'\n'+fwd_text).strip() if text else fwd_text
         labels=emoticons.describe(parts)
         if labels:text+='\n'+labels
         images=[p.get('data',{}) for p in parts if isinstance(p,dict) and p.get('type') in ('image','mface')]

@@ -1,11 +1,10 @@
 """Keep authorship on quotes and retrieve same-group provenance before worker inference."""
 from pathlib import Path
-from app import archive
-import time
+import time;from app import archive
 
 def quote(db,root,group,mid):
  group=str(group);mid=str(mid).removeprefix('bot:');saved=None
- if (Path(root)/'app.archive.sqlite3').exists():
+ if (Path(root)/'archive.sqlite3').exists():
   disk=archive.Archive(root)
   try:saved=disk.get(group,mid)
   finally:disk.close()
@@ -25,7 +24,7 @@ def enrich(cfg,group,payload):
    if ref['author_role']=='self' and ref.get('nickname')==bot:ref['nickname']='自己'
    if ref.get('available') and len(ref.get('text',''))>=8:quotes.setdefault(ref['message_id'],ref)
  result=[];seen=set();budget=6000
- if (Path(root)/'app.archive.sqlite3').exists():
+ if (Path(root)/'archive.sqlite3').exists():
   disk=archive.Archive(root)
   try:
    for ref in list(quotes.values())[:3]:

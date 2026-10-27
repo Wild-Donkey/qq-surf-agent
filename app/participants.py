@@ -108,7 +108,7 @@ def flush_profiles(db,root,batch):
         row=db.execute('SELECT * FROM speaker_profiles WHERE user_id=?',(user,)).fetchone()
         if not row:continue
         if (Path(root)/'structured_memory.sqlite3').exists():
-            from memory_store import MemoryStore
+            from app.memory_store import MemoryStore
             store=MemoryStore(root)
             try:store.account(user,dict(row))
             finally:store.close()
@@ -157,7 +157,7 @@ def reconcile_archive(db,cfg):
     with db:
         for row in db.execute("SELECT user_id FROM speaker_profiles WHERE source='model'").fetchall():
             set_profile(db,row['user_id'],'unknown',0,'旧聊天worker判断已作废，等待应用证据复核','app_migration',time.time())
-    path=Path(cfg['context_dir'])/'app.archive.sqlite3'
+    path=Path(cfg['context_dir'])/'archive.sqlite3'
     if path.exists():
         saved=sqlite3.connect(path);saved.row_factory=sqlite3.Row
         try:
