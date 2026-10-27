@@ -47,6 +47,9 @@ class ReplyFormsTests(unittest.TestCase):
   for _ in range(2):
    social.apply_decision(self.db,self.job,{'action':'reply','text':'','reply_parts':[{'emoticon':{'kind':'face','id':self.face}}]}, {},self.cfg,self.now)
   self.assertEqual(self.db.execute('SELECT count(*) FROM deliveries').fetchone()[0],1)
+ def test_duplicate_adjacent_text_parts_collapse(self):
+  parts=replies.prepare(self.cfg,'1',[{'text':'高冷啥，我哥在哪呢'},{'text':'高冷啥，我哥在哪呢'}])
+  self.assertEqual(parts,[{'text':'高冷啥，我哥在哪呢'}])
  def test_recent_sticker_is_rejected(self):
   with patch('app.emoticons.safe_selection',return_value={'kind':'sticker','id':'x'}),patch('app.emoticons.recent_echo',return_value=True):
    with self.assertRaises(ValueError):replies.prepare(self.cfg,'1',[{'emoticon':{'kind':'sticker','id':'x'}}])
@@ -80,7 +83,7 @@ class EmoticonTests(unittest.TestCase):
    workflow.ingest(db,event,cfg,100)
    with db:db.execute('DELETE FROM speaker_events')
    self.assertEqual(workflow.ingest(db,event,cfg,101),'duplicate_event')
-   import participants
+   from app import participants
    self.assertTrue(participants.humans_recent(db,'1',cfg,101));db.close()
 
  def test_invalid_optional_emoticon_preserves_text_reply(self):

@@ -16,7 +16,7 @@ def describe(parts):
  return '\n'.join(out)
 def connect(root):
  root=Path(root);root.mkdir(parents=True,exist_ok=True)
- db=sqlite3.connect(root/'app.emoticons.sqlite3',timeout=20);db.row_factory=sqlite3.Row
+ db=sqlite3.connect(root/'emoticons.sqlite3',timeout=20);db.row_factory=sqlite3.Row
  db.execute('CREATE TABLE IF NOT EXISTS stickers(id TEXT PRIMARY KEY,group_id TEXT,url TEXT,description TEXT,media_key TEXT,updated REAL)')
  db.execute('BEGIN IMMEDIATE')
  columns={r[1] for r in db.execute('PRAGMA table_info(stickers)')}

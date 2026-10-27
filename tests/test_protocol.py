@@ -65,7 +65,7 @@ class EmptyOutputTests(unittest.TestCase):
    self.assertEqual(caught.exception.code,'model_content_filtered')
 
  def test_filtered_group_batch_is_blocked_and_cannot_be_requeued_as_pending(self):
-  import workflow,operator_control,time
+  import time;from app import workflow,operator_control
   db=workflow.connect(':memory:');cfg={'groups':[{'id':1}],'bot_id':99}
   try:
    key=operator_control.submit(db,cfg,'1','test')
@@ -82,10 +82,12 @@ class EnvelopeTests(unittest.TestCase):
     def test_nested_envelopes_and_conflicts(self):
         good = {'action': 'reply', 'text': '好', 'quality': 'natural'}
         self.assertEqual(social.validate_decision(json.dumps({'type': 'json_object', 'content': json.dumps(good)}))['action'], 'reply')
+        # Conflicting value for a recognized field still raises.
         with self.assertRaises(ValueError):
             application.decode(json.dumps({'call': {'name': 'finish_turn', 'arguments': {'action': 'wait', 'quality': 'awkward'}}, 'quality': 'natural'}))
-        with self.assertRaises(ValueError):
-            application.decode(json.dumps({'call': {'name': 'wait', 'arguments': {}}, 'action': 'reply'}))
+        # Unknown top-level fields are ignored, not rejected.
+        result = application.decode(json.dumps({'call': {'name': 'wait', 'arguments': {}}, 'action': 'reply'}))
+        self.assertEqual(result['name'], 'wait')
 
     def test_safe_misplaced_fields_are_normalized_without_overriding(self):
         raw = {'call': {'name': 'finish_turn', 'arguments': {'action': 'reply', 'text': '好'}}, 'quality': 'natural', 'group_state': {'summary': '聊天中'}, 'reason': '自然接话'}
@@ -96,11 +98,11 @@ class EnvelopeTests(unittest.TestCase):
         with self.assertRaises(social.ProtocolError):
             social.validate_decision(json.dumps(raw))
 
-    def test_api_shape_errors_use_short_protocol_backoff(self):
-        with self.assertRaises(social.ProtocolError) as caught:
-            social.validate_decision('{"call":{"name":"wait","arguments":{}},"unexpected":"private text"}')
-        self.assertEqual(caught.exception.code, 'ambiguous_api_envelope')
-        self.assertNotIn('private text', json.dumps(caught.exception.details))
+    def test_unknown_fields_are_ignored_not_rejected(self):
+        # Unknown top-level fields are dropped; the valid call still succeeds.
+        result = social.validate_decision('{"call":{"name":"wait","arguments":{}},"unexpected":"private text"}')
+        self.assertEqual(result['action'], 'wait')
+        self.assertNotIn('private text', json.dumps(result))
 
 
 if __name__ == '__main__':

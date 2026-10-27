@@ -78,7 +78,7 @@ def prepare(payload):
                 if not path.exists():path.write_bytes(raw)
                 detail.update(received_at=item.get('received_at',time.time()),original_key=item.get('_original_key',key),sticker_hint=bool(item.get('metadata',{}).get('_sticker_hint')),media_key=key,event_key=item.get('event_key'),group_id=item.get('group_id'),url=item.get('url') or ('qq-message:'+item.get('event_key','')+':'+str(item.get('ordinal',0))))
             if item.get('cache_root'):
-                import emoticons
+                from app import emoticons
                 detail['sticker_id']=emoticons.observe_asset(item['cache_root'],item.get('group_id',''),detail)
             details.append(detail)
         except Exception as exc:
@@ -89,7 +89,7 @@ def prepare(payload):
 
 
 def bridge_call(action,payload):
-    import agent
+    from app import agent
     return agent.onebot_call(json.loads((ROOT/'config.json').read_text()),action,payload)
 
 
@@ -151,7 +151,7 @@ def cached_resolve(item):
     root=item.get('cache_root')
     if not root:return resolve(item)
     if item.get('cached_asset_key'):
-        import emoticons
+        from app import emoticons
         return emoticons.asset_path(root,item['cached_asset_key']).read_bytes(),bool(item.get('animated_first_frame',False))
     directory=Path(root)/'media';directory.mkdir(parents=True,exist_ok=True)
     db=sqlite3.connect(directory/'references.sqlite3',timeout=20)

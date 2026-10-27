@@ -1,6 +1,6 @@
 import json,tempfile,time,unittest
 from unittest.mock import patch
-from app import private_chat, workflow, moderation
+from app import private_chat,workflow,moderation
 
 class PrivateTests(unittest.TestCase):
  def setUp(self):
@@ -79,7 +79,7 @@ class PrivateTests(unittest.TestCase):
   self.assertEqual(sent[0]['user_id'],7)
 
  def test_private_reaction_sequence_is_sent_without_required_text(self):
-  import emoticons
+  from app import emoticons
   self.add(text='来个表情')
   face=next(iter(emoticons.FACES));parts=[{'emoticon':{'kind':'face','id':face}},{'emoticon':{'kind':'face','id':face}}]
   raw=json.dumps({'call':{'name':'finish_turn','arguments':{'action':'reply','reply_parts':parts,'quality':'natural'}}})

@@ -41,7 +41,7 @@ def wake(db):
 
 
 def owner_message(db,cfg,group,message_id,text,image=None):
- import social,participants
+ from app import social,participants
  owner=str(cfg.get('alerts',{}).get('owner_qq',''))
  if not owner.isdigit():return
  now=time.time();event={'group_id':str(group),'user_id':owner,'message_id':str(message_id),'time':now,'message':[{'type':'text','data':{'text':'[bot owner 人工发言] '+text}}]}
@@ -50,7 +50,7 @@ def owner_message(db,cfg,group,message_id,text,image=None):
   participants.set_profile(db,owner,'human',1,'本机运营者人工发言','operator',now)
   social.enqueue(db,event,cfg,now)
  if image is not None:
-  import vision,hashlib
+  import hashlib;from app import vision
   from pathlib import Path
   preview,_=vision.decode_image(image);key=hashlib.sha256(preview).hexdigest()+'.jpg'
   directory=Path(cfg['context_dir'])/'media';directory.mkdir(parents=True,exist_ok=True)

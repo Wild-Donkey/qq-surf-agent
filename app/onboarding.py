@@ -91,7 +91,7 @@ def bootstrap(db,cfg,api,now):
             for event in data.get('messages',[]):
                 stamp=float(event.get('time',0))
                 if str(event.get('user_id'))==str(cfg['bot_id']) or not now-30*86400<=stamp<=now:continue
-                import archive
+                from app import archive
                 archive.record_event(cfg,dict(event,group_id=gid))
                 event.update(post_type='message',message_type='group',group_id=gid)
                 memory.observe(event,cfg['bot_id']);latest=max(latest,stamp)
@@ -106,7 +106,7 @@ def bootstrap(db,cfg,api,now):
         body=f'扫描到 {member_count} 名成员；其中 {len(known)} 个账号在其他群的本机样本或成员扫描中出现过。\n'
         if known:body+='已有交集的昵称：'+'、'.join(known[:20])+'。仅表示账号交集，不等同于私交。\n'
         if cfg.get('profiling',{}).get('enabled'):
-            import profiling
+            from app import profiling
             profiling.enqueue(db,cfg,gid)
             body+='\n已安排批量历史建档：先完成群画像，再逐成员更新画像；此处只记录扫描结果。\n'
         elif samples:
@@ -142,7 +142,7 @@ def refresh_greeting_activity(db,cfg,api,now):
         with db:db.execute('UPDATE group_onboarding SET retry_after=? WHERE group_id=?',(now+60,gid))
         try:
             history=agent.onebot_call(api,'get_group_msg_history',{'group_id':int(gid),'count':20,'disable_get_url':True})
-            import workflow
+            from app import workflow
             for event in history.get('messages',[]):
                 if str(event.get('user_id'))==str(cfg['bot_id']):continue
                 event=dict(event,post_type='message',message_type='group',group_id=gid)
@@ -175,7 +175,7 @@ def greet(db,cfg,now):
     model=social.load_model(cfg)
     for row in db.execute("SELECT group_id FROM group_onboarding WHERE new_group=1 AND intro_candidate IS NULL AND status='done'").fetchall():
         gid=row['group_id']
-        import moderation
+        from app import moderation
         if moderation.is_muted(db,gid,now):continue
         if not greeting_allowed(db,cfg,gid,now):continue
         text=bot_identity.introduction(model)

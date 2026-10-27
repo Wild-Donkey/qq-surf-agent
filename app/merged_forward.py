@@ -100,7 +100,7 @@ def send_payload(db,cfg,target,source,data,now=None):
 
 def outgoing(db,cfg,source,now=None,before=None):
  """Let the source worker publish its own highlights directly to active peers."""
- import participants
+ from app import participants
  now=time.time() if now is None else now;ensure_schema(db);result=[]
  groups={str(g['id']):g for g in cfg['groups'] if g.get('enabled',True) and g.get('allow_cross_group_forward',True)}
  if str(source) not in groups:return []
@@ -126,7 +126,7 @@ def outgoing(db,cfg,source,now=None,before=None):
  return result
 
 def approve_outgoing(db,cfg,source,decision,now):
- import participants
+ from app import participants
  ensure_schema(db)
  visible=[b for b in decision.get('_outgoing_moments',[]) if b['destination']['route_id']==decision.get('route_id') and b['bundle_id']==decision.get('bundle_id')]
  if not visible:raise ValueError('forward_route_outside_context')

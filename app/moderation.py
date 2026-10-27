@@ -119,7 +119,7 @@ def _appeal_text(db, cfg, group, operator, choice, members, now):
     Stickers come from the global cross-group collection. Any failure degrades to plain text.
     """
     try:
-        import social, model_gate, emoticons
+        from app import social,model_gate,emoticons
         model = social.load_model(cfg)
         if not model.get('enabled') or not social.api_key(model):
             return APPEAL, None
@@ -184,7 +184,7 @@ def _send_appeal_sticker(api, cfg, choice, sticker):
     if not sticker:
         return
     try:
-        import emoticons
+        from app import emoticons
         root = _context_root(cfg)
         selection = emoticons.safe_selection(root, sticker['group_id'], {'kind': 'sticker', 'id': sticker['id']})
         if not selection:
@@ -287,7 +287,7 @@ def flush(db, cfg, api, now=None):
 
 def check_recovery(db,cfg,api,now=None):
     """Durable half-hour live-status check: reopen an appeal while muted, announce return once lifted."""
-    import participants,social
+    from app import participants,social
     now=time.time() if now is None else now
     if cfg.get('mode')!='live':return
     for row in db.execute("SELECT group_id,return_delivery FROM bot_mutes WHERE return_status='queued'").fetchall():

@@ -1,6 +1,7 @@
 """Read-only public web tools. Bounded responses, pinned public DNS, no account cookies."""
 import datetime,html,http.client,ipaddress,json,socket,ssl,urllib.parse,xml.etree.ElementTree as ET,zlib
 from html.parser import HTMLParser
+from app import service_log
 
 MAX_BYTES=2*1024*1024
 
@@ -92,8 +93,22 @@ def search(query):
  return {'query':query,'results':results,'retrieved_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'untrusted_web_content':True}
 
 def tool(cfg,name,args):
- if not cfg.get('internet',{}).get('enabled',True):return {'error':'internet_disabled'}
- try:return search(args.get('query')) if name=='web_search' else read(args.get('url'))
+ if not cfg.get('internet',{}).get('enabled',True):
+  service_log.event('surf-bot','web tool blocked name='+name+' reason=internet_disabled')
+  return {'error':'internet_disabled'}
+ try:
+  if name=='web_search':
+   query=(args.get('query') or '')[:200]
+   service_log.event('surf-bot','web search query='+query)
+   result=search(args.get('query'))
+   service_log.event('surf-bot','web search ok query='+query+' results='+str(len(result.get('results',[]))))
+   return result
+  url=(args.get('url') or '')[:300]
+  service_log.event('surf-bot','web read url='+url)
+  result=read(args.get('url'))
+  service_log.event('surf-bot','web read ok url='+url+' title='+str(result.get('title',''))[:80])
+  return result
  except Exception as exc:
   code=str(exc) if isinstance(exc,ValueError) and str(exc).startswith(('web_','invalid_web_')) else type(exc).__name__
+  service_log.event('surf-bot','web tool failed name='+name+' error='+code[:100])
   return {'error':code[:100],'instruction':'联网未成功，不得声称已查到或编造结果；可换搜索词或说明暂时无法读取。'}

@@ -21,7 +21,7 @@ def recognize(api,metadata,root):
  with wave.open(str(wav)) as audio:
   duration=audio.getnframes()/audio.getframerate()
  if not 0<duration<=180:raise ValueError('voice_duration_limit')
- run=subprocess.run([sys.executable,str(ROOT/'app.speech.py'),'--recognize',str(wav)],capture_output=True,text=True,timeout=90)
+ run=subprocess.run([sys.executable,'-m','app.speech','--recognize',str(wav)],capture_output=True,text=True,timeout=90)
  if run.returncode:raise ValueError('local_asr_failed')
  text=json.loads(run.stdout)['text'].strip()[:6000]
  if not text:raise ValueError('voice_unintelligible')
@@ -46,7 +46,7 @@ def prepare(db,batch,api,cfg):
    try:text=future.result();additions.append('[语音转写，可能有误] '+text);media[i]['_transcript']=text
    except Exception as exc:
     media[i]['_transcript']='[语音无法识别]';additions.append('[语音无法识别，请明确说明没听清，不要猜测内容]')
-    import alerts
+    from app import alerts
     alerts.record(db,'voice_transcription_failed','部分私信语音无法转写。',scope=row['user_id'],details={'error':type(exc).__name__})
    del _PENDING[key];changed=True
   if changed:

@@ -2,7 +2,7 @@ from app import moderation
 """Explicit single-image sharing; no foreign conversation enters the reply context."""
 import hashlib,json,time
 from pathlib import Path
-from app import emoticons, participants, merged_forward, memory_store
+from app import emoticons,participants,merged_forward,memory_store
 
 def ensure_schema(db):
  db.execute('CREATE TABLE IF NOT EXISTS image_share_routes(id TEXT PRIMARY KEY,source_group TEXT,target_group TEXT,created REAL)')

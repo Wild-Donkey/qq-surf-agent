@@ -1,7 +1,7 @@
 import json,tempfile,time,unittest
 from unittest.mock import patch
 from pathlib import Path
-from app import workflow, participants, replies, interactions, identities, social, application
+from app import workflow,participants,replies,interactions,identities,social,application
 
 class InteractionTests(unittest.TestCase):
  def setUp(self):
@@ -44,7 +44,7 @@ class InteractionTests(unittest.TestCase):
   self.assertEqual(api.call_args.args[2]['message'][0]['type'],'reply')
   self.assertEqual(api.call_args.args[2]['message'][1]['type'],'at')
  def test_private_poke_is_bound_to_current_friend_and_not_repeated(self):
-  import private_chat
+  from app import private_chat
   now=time.time()
   event={'post_type':'message','message_type':'private','sub_type':'friend','user_id':7,'message_id':'p1','message':[{'type':'text','data':{'text':'戳一下'}}]}
   private_chat.ingest(self.db,event,self.cfg,now-10)

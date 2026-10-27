@@ -2,7 +2,7 @@ import io,json,sys,unittest
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from app import vision, chatgpt_auth
+from app import vision,chatgpt_auth
 
 class VisionTests(unittest.TestCase):
     def test_only_qq_image_hosts_allowed(self):

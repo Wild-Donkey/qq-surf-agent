@@ -2,7 +2,7 @@
 import json,time,hashlib
 from pathlib import Path
 from app.memory import atomic_write,safe_id
-from app import archive, agent, model_gate
+from app import archive,agent,model_gate
 from app import memory_store
 from app.protocol import parse_json
 
@@ -135,7 +135,7 @@ publish_member_profile：以已经写好的群画像为参考背景，结合该�
 
 def infer(db,cfg,operation,payload,invoke=None):
  if invoke:return invoke(operation,payload)
- import social
+ from app import social
  slot=model_gate.reserve(db,cfg,background=True)
  if slot is None:return None
  try:
@@ -195,7 +195,7 @@ def tick(db,cfg,api,invoke=None):
   for user,rows in sorted(by_user.items(),key=lambda pair:(-len(pair[1]),pair[0])):
    if cfg.get('memory_schema',{}).get('enabled'):rows=snapshot_person(cfg,user) or rows
    plan={'id':user,**reference_plan(rows),'notes':[],'index':0,'count':len(rows)}
-   from context_contract import check
+   from app.context_contract import check
    check('ProfileMemberPlan',plan)
    state['members'].append(plan)
   state['member_index']=0;state['phase']='members'
@@ -223,5 +223,5 @@ def tick(db,cfg,api,invoke=None):
  return True
 
 def load_member(cfg,group,user):
- import application
+ from app import application
  return application.member_markdown(cfg,group,user)[:8000]

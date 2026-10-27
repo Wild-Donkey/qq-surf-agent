@@ -1,7 +1,7 @@
 import concurrent.futures,json,tempfile,time,unittest
 from unittest.mock import patch
 from pathlib import Path
-from app import speech, private_chat, workflow
+from app import speech,private_chat,workflow
 
 class SpeechTests(unittest.TestCase):
  def setUp(self):

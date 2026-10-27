@@ -2,7 +2,7 @@ import io,tempfile,time,unittest
 from pathlib import Path
 from unittest.mock import patch
 from PIL import Image
-from app import qq, workflow, operator_control, social, console, clipboard_image
+from app import qq,workflow,operator_control,social,console,clipboard_image
 from app.memory import MarkdownMemory
 class ClipboardOwnerTests(unittest.TestCase):
  def setUp(self):

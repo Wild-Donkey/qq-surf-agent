@@ -11,17 +11,26 @@ def prepare(cfg,group,parts,explicit=False,db=None):
  if not isinstance(parts,list) or not 1<=len(parts)<=8:raise ValueError('invalid_reply_parts')
  result=[];characters=0;reactions=0;mentions=0;quotes=0
  for part in parts:
-  if not isinstance(part,dict) or set(part) not in ({'text'},{'emoticon'},{'at'},{'reply_to'}):raise ValueError('invalid_reply_part')
+  if not isinstance(part,dict):raise ValueError('invalid_reply_part')
+  # Drop unknown keys the model may attach (quality, request_ids, etc.); keep only recognized ones.
+  part={k:v for k,v in part.items() if k in ('text','emoticon','at','reply_to')}
+  if not part:raise ValueError('invalid_reply_part')
+  # If multiple recognized keys landed in one part, prioritize text > emoticon > at > reply_to.
+  if 'text' in part:part={'text':part['text']}
+  elif 'emoticon' in part:part={'emoticon':part['emoticon']}
+  elif 'at' in part:part={'at':part['at']}
+  else:part={'reply_to':part['reply_to']}
   if 'text' in part:
    text=part['text']
    if not isinstance(text,str) or not text.strip():raise ValueError('invalid_reply_part_text')
+   if result and result[-1].get('text')==text:continue
    characters+=len(text);result.append({'text':text})
   elif 'at' in part:
-   import interactions
+   from app import interactions
    user=interactions.member(cfg,group,part['at'],db);mentions+=1
    result.append({'at':{'user_id':user}})
   elif 'reply_to' in part:
-   import interactions
+   from app import interactions
    if result or quotes:raise ValueError('quote_must_be_first')
    result.append({'reply_to':interactions.quote(cfg,group,part['reply_to'],db)});quotes+=1
   else:

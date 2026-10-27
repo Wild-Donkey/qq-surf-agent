@@ -1,6 +1,6 @@
 import tempfile,time,json,unittest
 from unittest.mock import patch
-from app import workflow, clarification, identities, request_queue, social
+from app import workflow,clarification,identities,request_queue,social
 
 class ClarificationTests(unittest.TestCase):
  def test_ask_links_request_waits_and_wakes_on_answer(self):

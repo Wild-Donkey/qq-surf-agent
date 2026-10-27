@@ -9,7 +9,7 @@ def member(cfg,group,alias,db=None,raw_id=False):
  finally:registry.close()
  if not user.isdigit() or user in ('0',str(cfg.get('bot_id',''))) or str(group).startswith('private:'):raise ValueError('interaction_target_invalid')
  found=db.execute('SELECT 1 FROM speaker_events WHERE group_id=? AND user_id=? LIMIT 1',(str(group),user)).fetchone() if db is not None else None
- path=Path(cfg['context_dir'])/'app.archive.sqlite3'
+ path=Path(cfg['context_dir'])/'archive.sqlite3'
  if not found and path.exists():
   disk=sqlite3.connect(path)
   try:found=disk.execute('SELECT 1 FROM messages WHERE group_id=? AND user_id=? LIMIT 1',(str(group),user)).fetchone()
@@ -19,12 +19,14 @@ def member(cfg,group,alias,db=None,raw_id=False):
 
 def quote(cfg,group,mid,db=None):
  mid=str(mid).removeprefix('bot:')
+ # Tolerate event_key format "group_id:message_id" by taking the last segment.
+ if ':' in mid:mid=mid.rsplit(':',1)[-1]
  if not re.fullmatch(r'-?\d{1,30}',mid):raise ValueError('invalid_quote_message')
  found=None
  if db is not None:
   if str(group).startswith('private:'):found=db.execute('SELECT 1 FROM private_messages WHERE user_id=? AND message_id IN (?,?)',(str(group).split(':',1)[1],mid,'bot:'+mid)).fetchone()
   else:found=db.execute('SELECT 1 FROM events WHERE group_id=? AND message_id IN (?,?)',(str(group),mid,'bot:'+mid)).fetchone()
- path=Path(cfg['context_dir'])/'app.archive.sqlite3'
+ path=Path(cfg['context_dir'])/'archive.sqlite3'
  if not found and not str(group).startswith('private:') and path.exists():
   disk=sqlite3.connect(path)
   try:found=disk.execute('SELECT 1 FROM messages WHERE group_id=? AND message_id=?',(str(group),mid)).fetchone()

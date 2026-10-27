@@ -64,9 +64,15 @@ class MergedForwardTests(unittest.TestCase):
   self.assertEqual(mf.available(self.db,self.cfg,'2',self.now),[])
   self.cfg['groups'][0]['allow_cross_group_forward']=False
   self.assertEqual(mf.available(self.db,self.cfg,'2',self.now),[])
- def test_disabled_target_and_human_gate(self):
+ def test_sharing_bypasses_human_gate(self):
+  # merged_forward/share are cross-group sharing actions; they must not be
+  # blocked by "no human spoke in the last 5 minutes" — group_is_active
+  # already excludes groups dead for inactive_group_days.
   self.approve();self.cfg['human_presence']={'enabled':True}
-  with patch('app.agent.onebot_call',return_value={'user_id':99}) as api:self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+1),0);self.assertEqual(api.call_count,1)
+  with patch('app.agent.onebot_call',side_effect=[{'user_id':99},{'message_id':888}]) as api:
+   self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+1),1)
+   self.assertEqual(api.call_count,2)
+  self.assertEqual(self.db.execute('SELECT status FROM deliveries').fetchone()[0],'sent')
  def test_final_payload_revalidates_privacy_and_source(self):
   self.approve();row=self.db.execute('SELECT text FROM candidates').fetchone()
   self.assertEqual(len(mf.send_payload(self.db,self.cfg,'2','1',row[0])['messages']),3)

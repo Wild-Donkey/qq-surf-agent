@@ -2,11 +2,11 @@
 """Independent application job runner; history profiling never blocks live chat."""
 import argparse,fcntl,json,signal,threading,time
 from pathlib import Path
-from app import workflow, profiling, alerts, memory_maintenance
+from app import workflow,profiling,alerts,memory_maintenance
 ROOT=Path(__file__).resolve().parents[1]
 
 def main():
- parser=argparse.ArgumentParser();parser.add_argument('--config',type=Path,default=ROOT/'app.workflow.json');parser.add_argument('command',choices=['run','status','enqueue'],default='run',nargs='?');parser.add_argument('--group');parser.add_argument('--reset',action='store_true');args=parser.parse_args()
+ parser=argparse.ArgumentParser();parser.add_argument('--config',type=Path,default=ROOT/'workflow.json');parser.add_argument('command',choices=['run','status','enqueue'],default='run',nargs='?');parser.add_argument('--group');parser.add_argument('--reset',action='store_true');args=parser.parse_args()
  cfg=json.loads(args.config.read_text());path=Path(cfg['database']);path=path if path.is_absolute() else ROOT/path
  db=workflow.connect(path);profiling.ensure_schema(db)
  if args.command=='enqueue':

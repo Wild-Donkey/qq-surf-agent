@@ -72,8 +72,8 @@ class SessionPool:
     @staticmethod
     def checkpoint(session,cfg,reason):
         if not cfg or not cfg.get('memory_schema',{}).get('enabled'):return
-        from memory import MarkdownMemory
-        import memory_maintenance
+        from app.memory import MarkdownMemory
+        from app import memory_maintenance
         memory=MarkdownMemory(cfg['context_dir'])
         try:memory.flush_session(session.group_id,session.turns)
         finally:memory.close()

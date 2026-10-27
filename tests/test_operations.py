@@ -56,7 +56,8 @@ class DiagnosticTests(unittest.TestCase):
         diagnostics.enqueue(self.db,self.cfg,1001);diagnostics.enqueue(self.db,self.cfg,1002)
         self.assertEqual(self.db.execute('SELECT count(*) FROM diagnostic_jobs').fetchone()[0],1)
     def test_snapshot_omits_secrets_and_worker_records_result_usage(self):
-        (self.root/'app.workflow.py').write_text('# public code')
+        (self.root/'app').mkdir()
+        (self.root/'app/workflow.py').write_text('# public code')
         (self.root/'llm.local.json').write_text('{"api_key":"never-copy"}')
         alerts.record(self.db,'worker_ValueError','任务异常',now=1000)
         result={'cause':'配置项不匹配','evidence':'快照中的读取分支','next_step':'修正配置读取'}
@@ -130,7 +131,7 @@ class OnboardingTests(unittest.TestCase):
         self.db=workflow.connect(':memory:');onboarding.ensure_schema(self.db);self.now=time.time()
     def tearDown(self):self.db.close();self.tmp.cleanup()
     def test_discovery_distinguishes_existing_groups_from_new(self):
-        path=self.root/'app.workflow.json';path.write_text(json.dumps(self.cfg))
+        path=self.root/'workflow.json';path.write_text(json.dumps(self.cfg))
         with patch('app.agent.onebot_call',side_effect=[{'user_id':99},[{'group_id':1,'group_name':'A'},{'group_id':2,'group_name':'B'},{'group_id':3,'group_name':'C'}]]):
             result=onboarding.discover(self.db,self.cfg,{},path,self.now)
         self.assertEqual(len(result['groups']),3)

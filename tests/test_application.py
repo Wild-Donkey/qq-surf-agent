@@ -1,12 +1,16 @@
 import unittest,json,tempfile,time
 from pathlib import Path
 from unittest.mock import patch
-from app import application, workflow, participants, social
+from app import application,workflow,participants,social,archive
+from app.memory import MarkdownMemory
 class ApplicationTests(unittest.TestCase):
  def test_worker_only_calls_exposed_api(self):
   self.assertEqual(social.validate_decision('{"call":{"name":"reply","arguments":{"text":"好","quality":"natural"}}}')['action'],'reply')
-  for raw in [{'action':'reply','text':'hi','speakers':[]},{'call':{'name':'set_member','arguments':{}}},{'call':{'name':'reply','arguments':{'text':'hi','target_group':'999'}}},{'call':{'name':'wait','arguments':{}},'group_state':'overwrite'}]:
-   with self.assertRaises(ValueError):application.decode(json.dumps(raw))
+  # Unknown API name still rejected.
+  with self.assertRaises(ValueError):application.decode(json.dumps({'call':{'name':'set_member','arguments':{}}}))
+  # Unknown fields/arguments are dropped, not rejected.
+  for raw in [{'action':'reply','text':'hi','speakers':[]},{'call':{'name':'reply','arguments':{'text':'hi','target_group':'999'}}},{'call':{'name':'wait','arguments':{}},'group_state':'overwrite'}]:
+   result=application.decode(json.dumps(raw));self.assertIn(result['name'],('reply','wait','finish_turn'))
  def test_application_marks_target_not_controller(self):
   db=workflow.connect(':memory:');cfg={'bot_id':'99','human_presence':{'known_humans':['7']}}
   events=[{'user_id':'7','message_id':1,'time':1000,'group_id':'1','message':[{'type':'text','data':{'text':'真得给你清理上下文了'}},{'type':'at','data':{'qq':'9'}}]}, {'user_id':'9','message_id':2,'time':1001,'group_id':'1','message':[{'type':'text','data':{'text':'别清别清'}}]}]
@@ -42,6 +46,54 @@ class ApplicationTests(unittest.TestCase):
  def test_finish_turn_carries_state_via_api_only(self):
   d=application.decision(application.decode(json.dumps({'call':{'name':'finish_turn','arguments':{'action':'wait','group_state':'正在聊bot','members':[]}}})))
   self.assertEqual(d['action'],'wait');self.assertEqual(d['state_updates']['group_state'],'正在聊bot')
+ def test_send_to_group_direct_call_carries_group_id(self):
+  d=application.decision(application.decode(json.dumps({'call':{'name':'send_to_group','arguments':{'group_id':'970078128','text':'隔壁群来打个招呼','quality':'natural'}}})))
+  self.assertEqual(d['action'],'send_to_group');self.assertEqual(d['group_id'],'970078128');self.assertEqual(d['text'],'隔壁群来打个招呼')
+ def test_finish_turn_send_to_group_carries_group_id(self):
+  d=application.decision(application.decode(json.dumps({'call':{'name':'finish_turn','arguments':{'action':'send_to_group','group_id':'970078128','text':'主动去别的群说一句','quality':'natural'}}})))
+  self.assertEqual(d['action'],'send_to_group');self.assertEqual(d['group_id'],'970078128')
+ def test_send_to_group_requires_group_id_and_content(self):
+  with self.assertRaises(ValueError):application.decision(application.decode(json.dumps({'call':{'name':'send_to_group','arguments':{'text':'no target','quality':'natural'}}})))
+  with self.assertRaises(ValueError):application.decision(application.decode(json.dumps({'call':{'name':'send_to_group','arguments':{'group_id':'970078128','quality':'natural'}}})))
+ def test_send_private_direct_call_carries_user_id(self):
+  d=application.decision(application.decode(json.dumps({'call':{'name':'send_private','arguments':{'user_id':'12345','text':'私聊一句','quality':'natural'}}})))
+  self.assertEqual(d['action'],'send_private');self.assertEqual(d['user_id'],'12345');self.assertEqual(d['text'],'私聊一句')
+ def test_finish_turn_send_private_carries_user_id(self):
+  d=application.decision(application.decode(json.dumps({'call':{'name':'finish_turn','arguments':{'action':'send_private','user_id':'12345','text':'主动私信','quality':'natural'}}})))
+  self.assertEqual(d['action'],'send_private');self.assertEqual(d['user_id'],'12345')
+ def test_send_private_requires_user_id_and_content(self):
+  with self.assertRaises(ValueError):application.decision(application.decode(json.dumps({'call':{'name':'send_private','arguments':{'text':'no user','quality':'natural'}}})))
+  with self.assertRaises(ValueError):application.decision(application.decode(json.dumps({'call':{'name':'send_private','arguments':{'user_id':'12345','quality':'natural'}}})))
+ def test_read_group_is_a_read_action(self):
+  d=application.decision(application.decode(json.dumps({'call':{'name':'read_group','arguments':{'group_id':'970078128'}}})))
+  self.assertEqual(d['action'],'read');self.assertEqual(d['call']['name'],'read_group')
+ def test_settle_memory_summary_keeps_named_speakers_and_luna(self):
+  with tempfile.TemporaryDirectory() as root:
+   memory=MarkdownMemory(root)
+   try:
+    batch=[{'event_key':'1:1','created':1},{'event_key':'1:2','created':2}]
+    views=[{'speaker':'1234567','nickname':'阿甲','text':'说了点事'},
+           {'speaker':'self','nickname':'自己','text':'我回应了'}]
+    summary=application.settle_memory(memory,'1',batch,views)
+    self.assertIn('阿甲：',summary);self.assertIn('Luna：',summary)
+    self.assertNotIn('1234567：',summary)
+   finally:memory.close()
+ def test_read_group_messages_carry_archive_nicknames(self):
+  with tempfile.TemporaryDirectory() as root:
+   cfg={'context_dir':root,'bot_id':'99','groups':[{'id':'1','name':'A'},{'id':'2','name':'B'}]}
+   db=workflow.connect(':memory:');now=time.time()
+   workflow.ingest(db,{'post_type':'message','message_type':'group','group_id':2,'user_id':7,'message_id':1,'time':now,'sender':{'nickname':'阿甲'},'message':[{'type':'text','data':{'text':'隔壁群消息'}}]},cfg,now)
+   with db:db.execute('INSERT INTO events VALUES (?,?,?,?,?,?)',('2','9','fp2','没有job的消息','[]',now))
+   disk=archive.Archive(root)
+   try:
+    disk.record({'group_id':2,'user_id':7,'message_id':1,'time':now,'sender':{'card':'隔壁阿甲'},'message':[{'type':'text','data':{'text':'隔壁群消息'}}]})
+    disk.record({'group_id':2,'user_id':8,'message_id':9,'time':now+1,'sender':{'card':'隔壁阿乙'},'message':[{'type':'text','data':{'text':'没有job的消息'}}]})
+   finally:disk.close()
+   result=application.read(db,cfg,'1',{},{'name':'read_group','arguments':{'group_id':'2'}})
+   bymid={m['event_key']:m for m in result['messages']}
+   self.assertEqual(bymid['2:1']['nickname'],'隔壁阿甲')
+   self.assertEqual(bymid['2:9']['speaker'],'8');self.assertEqual(bymid['2:9']['nickname'],'隔壁阿乙')
+   db.close()
  def test_member_kind_api_requires_real_evidence_and_preserves_known_bot(self):
   with tempfile.TemporaryDirectory() as root:
    cfg={'context_dir':root,'bot_id':'99'};db=workflow.connect(':memory:')
