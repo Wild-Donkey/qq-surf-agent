@@ -7,6 +7,7 @@ import time
 import urllib.error
 from app import agent
 from app import alerts
+from app import qq
 from app.memory import MarkdownMemory
 from app import social
 from app import workflow
@@ -15,9 +16,9 @@ ROOT=Path(__file__).resolve().parents[1]
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument('command',choices=['status','bootstrap','flush','model-check','stop'])
+    parser.add_argument('command',choices=['status','bootstrap','flush','model-check','qq-login','stop'])
     args=parser.parse_args()
-    cfg=json.loads((ROOT/'app.workflow.json').read_text())
+    cfg=json.loads((ROOT/'workflow.json').read_text())
     api=json.loads((ROOT/'config.json').read_text())
     path=Path(cfg['database'])
     if not path.is_absolute():path=ROOT/path
@@ -25,7 +26,12 @@ def main():
     db=workflow.connect(path)
     try:
         if args.command=='stop':
-            (ROOT/'runtime'/'app.workflow.stop').touch();print('已请求守护进程停止。');return
+            (ROOT/'runtime'/'workflow.stop').touch();print('已请求守护进程停止。');return
+        if args.command=='qq-login':
+            result=qq.login_flow(cfg,api)
+            print(result)
+            if '取消' in result or '超时' in result:sys.exit(1)
+            return
         if args.command=='status':
             for key in ['last_event','last_tick','model_state']:
                 row=db.execute('SELECT value FROM metrics WHERE key=?',(key,)).fetchone()

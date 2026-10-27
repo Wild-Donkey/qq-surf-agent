@@ -55,7 +55,7 @@ class LiteTests(unittest.TestCase):
    out=io.StringIO();controller=Mock();controller.execute.return_value='已选择群'
    with patch('app.lite_console.ROOT',root),patch('app.avatar_palette.AvatarPalette',side_effect=AssertionError('must not load avatar colors')):
     lite_console.run(controller,Mock(side_effect=['/use 群','/help','/quit']),out)
-   self.assertNotIn('\x1b',out.getvalue());self.assertIn('[应用] worker processing',out.getvalue());self.assertIn('hello',out.getvalue())
+   self.assertNotIn('\x1b',out.getvalue());self.assertIn('[worker]',out.getvalue());self.assertIn('处理',out.getvalue());self.assertIn('hello',out.getvalue())
    controller.execute.assert_called_once_with('/use 群')
  def test_readline_completion_uses_command_prefix(self):
   read=Mock();read.__doc__='readline';read.get_line_buffer.return_value='/wor';read.get_endidx.return_value=4
@@ -131,21 +131,21 @@ if __name__ == '__main__':
 class UnifiedFeedTests(unittest.TestCase):
  def test_chronological_qq_app_and_readable_understanding(self):
   import json
-  from terminal_feed import Feed
+  from app.terminal_feed import Feed
   with tempfile.TemporaryDirectory() as tmp:
    root=Path(tmp);logs=root/'runtime/logs';logs.mkdir(parents=True)
-   (root/'app.workflow.json').write_text(json.dumps({'groups':[{'id':12345,'name':'测试群'}]}))
+   (root/'workflow.json').write_text(json.dumps({'groups':[{'id':12345,'name':'测试群'}]}))
    (logs/'qq-helper.log').write_text('10-21 14:02:05 [info] bot | 接收 <- 群聊 [测试群(12345)] [小明(67890)] hello\n10-21 14:02:07 [warn] bot | QQ warning\n')
    notes={'summary':'话题在讨论猫','images':[{'reference':'image1','description':'猫在纸箱上'}],'uncertainties':['不知道是谁家的猫']}
    (logs/'surf-bot.log').write_text('10-21 14:02:06 worker understanding group=12345 request_id=abc observations='+json.dumps(notes,ensure_ascii=False)+'\n')
    feed=Feed(root);rows=feed.read();text='\n'.join(rows)
-   self.assertIn('hello',rows[0]);self.assertIn('[理解][测试群] 话题在讨论猫',text)
+   self.assertIn('hello',rows[0]);self.assertIn('[worker][测试群] 局面理解',text)
    self.assertIn('图片 image1：猫在纸箱上',text);self.assertIn('待确认：不知道是谁家的猫',text)
    self.assertIn('[QQ]',rows[-1]);self.assertEqual(feed.read(),[])
    with (logs/'surf-bot.log').open('a') as f:f.write('10-21 14:02:08 model ready\n')
-   self.assertIn('[应用] model ready',feed.read()[0])
+   self.assertIn('[supervisor] model ready',feed.read()[0])
  def test_full_console_single_pane(self):
-  import console
+  from app import console
   screen=Mock();screen.getmaxyx.return_value=(30,120)
   with tempfile.TemporaryDirectory() as tmp,patch('app.console.ROOT',Path(tmp)),patch('app.console.Controller'),patch('app.console.avatar_palette.AvatarPalette'),patch('app.console.chat_view.Styles'),patch('app.console.curses.curs_set'),patch('app.console.curses.mousemask'),patch('app.console.sys.stdout',io.StringIO()),patch('app.console.terminal_mouse.Reader') as reader:
    reader.return_value.get.side_effect=[curses.KEY_F2,None,curses.KEY_F2]+list('/quit\n')
@@ -159,7 +159,7 @@ class UnifiedFeedTests(unittest.TestCase):
 class RetraceDisplayTests(unittest.TestCase):
  def test_orientation_notes_render_in_unified_feed(self):
   import json
-  from terminal_feed import format_lines
+  from app.terminal_feed import format_lines
   note={'topics':[{'text':'讨论运行方式','evidence_event_keys':['1:1']}],'referents':[{'expression':'那台','interpretation':'前文的电脑','certainty':'tentative','evidence_event_keys':['1:1']}],'open_interactions':[]}
   rows=format_lines(['10-21 19:00:00 group retrace complete group=1 referents=1 notes='+json.dumps(note,ensure_ascii=False)],'应用',{'1':'测试群'})
-  self.assertIn('[回溯][测试群] 话题：讨论运行方式',rows[0]);self.assertIn('那台 → 前文的电脑（推测）',rows[1])
+  self.assertIn('[worker][测试群] 回溯完成',rows[0]);self.assertIn('那台 → 前文的电脑（推测）','\n'.join(rows))

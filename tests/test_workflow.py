@@ -107,6 +107,107 @@ class WorkflowTests(unittest.TestCase):
         w.ingest(self.db,own,self.cfg,1001)
         self.assertFalse(w.group_is_active(self.db,'2',self.cfg,1001))
 
+    def _mark_active(self):
+        now=w.time.time()
+        self.db.executemany('INSERT OR REPLACE INTO group_activity VALUES (?,?)',
+                            [('1',now),('2',now),('3',now)])
+        self.db.commit()
+
+    @staticmethod
+    def _retcode(code):
+        exc=ValueError('OneBot 操作未成功，retcode=%s'%code); exc.retcode=code; return exc
+
+    def test_startup_backread_cold_group_retcode200_is_silent(self):
+        # NapCat 对冷群返回 retcode=200（消息不存在）= 无历史可补读，不得告警刷屏
+        self._mark_active()
+        with patch('app.agent.onebot_call',side_effect=self._retcode(200)) as api, \
+             patch('app.archive.record_event') as rec:
+            w.startup_backread(self.db,self.cfg,{})
+        self.assertEqual(api.call_count,3)
+        rec.assert_not_called()
+        self.assertEqual(self.db.execute(
+            "select count(*) from alerts where code='startup_history_failed'").fetchone()[0],0)
+
+    def test_startup_backread_failures_aggregate_single_alert(self):
+        # 真实失败按 service 级聚合成一条告警，重复启动只更新同一行
+        self._mark_active()
+        def fake(api_cfg,action,payload=None):
+            g=str(payload['group_id'])
+            if g=='1': raise self._retcode(500)
+            if g=='2': raise ConnectionError('boom')
+            return {'messages':[]}
+        with patch('app.agent.onebot_call',side_effect=fake), patch('app.archive.record_event'):
+            w.startup_backread(self.db,self.cfg,{})
+        rows=self.db.execute(
+            "select status,count,summary from alerts where code='startup_history_failed'").fetchall()
+        self.assertEqual(len(rows),1)
+        status,count,summary=rows[0]
+        self.assertEqual(status,'pending'); self.assertEqual(count,1)
+        self.assertIn('2 个群',summary)
+        with patch('app.agent.onebot_call',side_effect=fake), patch('app.archive.record_event'):
+            w.startup_backread(self.db,self.cfg,{})
+        self.assertEqual(self.db.execute(
+            "select count(*) from alerts where code='startup_history_failed'").fetchone()[0],1)
+
+    def test_startup_backread_success_no_alert(self):
+        self._mark_active()
+        msg={'message_id':900,'time':w.time.time(),'user_id':7,
+             'message':[{'type':'text','data':{'text':'hi'}}]}
+        with patch('app.agent.onebot_call',return_value={'messages':[msg]}) as api, \
+             patch('app.archive.record_event') as rec, \
+             patch('app.workflow.ingest') as ingest:
+            w.startup_backread(self.db,self.cfg,{})
+        self.assertEqual(api.call_count,3)
+        self.assertEqual(rec.call_count,3)
+        self.assertEqual(ingest.call_count,3)
+        self.assertEqual(self.db.execute(
+            "select count(*) from alerts where code='startup_history_failed'").fetchone()[0],0)
+
+    def _one_group_cfg(self,**overrides):
+        cfg=dict(self.cfg); cfg['groups']=[{'id':1,'name':'A'}]; cfg.update(overrides)
+        now=w.time.time()
+        self.db.execute('INSERT OR REPLACE INTO group_activity VALUES (?,?)',('1',now))
+        self.db.commit()
+        return cfg,now
+
+    def _msg(self,mid,age,text='x'*10):
+        return {'message_id':mid,'time':w.time.time()-age,'user_id':7,
+                'message':[{'type':'text','data':{'text':text}}]}
+
+    def test_startup_backread_time_gate_drops_beyond_window(self):
+        # 仅 1 天内进理解层；社交层仍只收 ≤180 秒，旧消息只归档不接话
+        cfg,now=self._one_group_cfg()
+        msgs=[self._msg(1,0),self._msg(2,2*3600),self._msg(3,25*3600)]
+        with patch('app.agent.onebot_call',return_value={'messages':msgs}), \
+             patch('app.archive.record_event') as rec, \
+             patch('app.workflow.ingest') as ingest:
+            w.startup_backread(self.db,cfg,{},now=now)
+        archived=[c.args[1]['message_id'] for c in rec.call_args_list]
+        socialed=[c.args[1]['message_id'] for c in ingest.call_args_list]
+        self.assertEqual(sorted(archived),[1,2])          # 25 小时前的被时间门控丢弃
+        self.assertEqual(socialed,[1])                     # 只有近实时消息进社交层
+
+    def test_startup_backread_size_gate_keeps_newest(self):
+        # 预算 K 截断：从新到旧累计，超预算即止，保留最新消息
+        cfg,now=self._one_group_cfg(backread_char_budget=12)
+        msgs=[self._msg(10,60,'old'*2),self._msg(11,40,'mid'*2),self._msg(12,20,'new'*2)]
+        with patch('app.agent.onebot_call',return_value={'messages':msgs}), \
+             patch('app.archive.record_event') as rec, \
+             patch('app.workflow.ingest'):
+            w.startup_backread(self.db,cfg,{},now=now)
+        archived=[c.args[1]['message_id'] for c in rec.call_args_list]
+        self.assertEqual(archived,[12,11])                 # 最新两条（6+6），第三条超出 10 字预算
+
+    def test_startup_backread_outside_live_window_archived_not_ingested(self):
+        cfg,now=self._one_group_cfg()
+        msgs=[self._msg(20,200)]                           # >180s 但 <1 天
+        with patch('app.agent.onebot_call',return_value={'messages':msgs}), \
+             patch('app.archive.record_event') as rec, \
+             patch('app.workflow.ingest') as ingest:
+            w.startup_backread(self.db,cfg,{},now=now)
+        self.assertEqual(rec.call_count,1)
+        ingest.assert_not_called()
+
     def test_daily_limit_and_cooldown(self):
         self.cfg.update(mode='live',routes={'1':['2']},max_per_group_day=1,group_cooldown_seconds=0)
         w.ingest(self.db,self.event(),self.cfg,1000);w.set_candidate(self.db,1,'approved')
