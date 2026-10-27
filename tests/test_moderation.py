@@ -1,13 +1,13 @@
 import hashlib,tempfile,unittest
 from pathlib import Path
 from unittest.mock import patch
-import emoticons,workflow,moderation
+from app import emoticons, workflow, moderation
 
 class ModerationTests(unittest.TestCase):
  def setUp(self):
   self.db=workflow.connect(':memory:')
   self.cfg={'bot_id':1,'groups':[{'id':10}],'mode':'live','moderation':{'appeal_enabled':True}}
-  self._no_model=patch('social.load_model',return_value={'enabled':False});self._no_model.start()
+  self._no_model=patch('app.social.load_model',return_value={'enabled':False});self._no_model.start()
  def tearDown(self):
   self._no_model.stop();self.db.close()
  def notice(self,t=100,duration=500,sub='ban',operator=2):
@@ -53,7 +53,7 @@ class ModerationTests(unittest.TestCase):
  def test_only_once(self):
   moderation.ingest(self.db,self.notice(),self.cfg,100)
   call,targets=self.mock_api()
-  with patch('moderation.agent.onebot_call',side_effect=call):
+  with patch('app.moderation.agent.onebot_call',side_effect=call):
    self.assertEqual(moderation.flush(self.db,self.cfg,{},101),1)
    self.assertEqual(moderation.flush(self.db,self.cfg,{},102),0)
   self.assertEqual(targets,[2])
@@ -65,7 +65,7 @@ class ModerationTests(unittest.TestCase):
   def send(payload):
    return self.blocked() if payload['user_id']==2 else {'message_id':77}
   call,targets=self.mock_api(members=members,friends=[2,3],send=send)
-  with patch('moderation.agent.onebot_call',side_effect=call):
+  with patch('app.moderation.agent.onebot_call',side_effect=call):
    self.assertEqual(moderation.flush(self.db,self.cfg,{},101),0)
    self.assertEqual(self.status()[0],'seeking')
    self.assertEqual(moderation.flush(self.db,self.cfg,{},102),1)
@@ -77,7 +77,7 @@ class ModerationTests(unittest.TestCase):
   members=[{'user_id':2,'role':'owner'},{'user_id':3,'role':'admin'}]
   call,targets=self.mock_api(members=members,friends=[2,3],send=lambda payload:self.blocked())
   # Each admin is retried three times with a 5-minute backoff before being given up on.
-  with patch('moderation.agent.onebot_call',side_effect=call):
+  with patch('app.moderation.agent.onebot_call',side_effect=call):
    for t in (101,402,703,1004,1305,1606):
     self.assertEqual(moderation.flush(self.db,self.cfg,{},t),0)
   self.assertEqual(targets,[2,2,2,3,3,3])
@@ -85,7 +85,7 @@ class ModerationTests(unittest.TestCase):
  def test_transient_retries_same_admin_then_exhausts(self):
   moderation.ingest(self.db,self.notice(100,duration=100000),self.cfg,100)
   call,targets=self.mock_api(send=lambda payload:TimeoutError())
-  with patch('moderation.agent.onebot_call',side_effect=call):
+  with patch('app.moderation.agent.onebot_call',side_effect=call):
    self.assertEqual(moderation.flush(self.db,self.cfg,{},101),0)
    self.assertEqual(moderation.flush(self.db,self.cfg,{},102),0)
    self.assertEqual(moderation.flush(self.db,self.cfg,{},402),0)
@@ -96,19 +96,19 @@ class ModerationTests(unittest.TestCase):
  def test_new_episode_retries_after_previous_exhaustion(self):
   moderation.ingest(self.db,self.notice(100,duration=100000),self.cfg,100)
   call,targets=self.mock_api(send=lambda payload:self.blocked())
-  with patch('moderation.agent.onebot_call',side_effect=call):
+  with patch('app.moderation.agent.onebot_call',side_effect=call):
    for t in (101,402,703):
     moderation.flush(self.db,self.cfg,{},t)
   self.assertEqual(self.status()[0],'exhausted')
   moderation.ingest(self.db,self.notice(200,0,'lift_ban'),self.cfg,200)
   moderation.ingest(self.db,self.notice(300,duration=100000),self.cfg,300)
-  with patch('moderation.agent.onebot_call',side_effect=self.mock_api()[0]):
+  with patch('app.moderation.agent.onebot_call',side_effect=self.mock_api()[0]):
    self.assertEqual(moderation.flush(self.db,self.cfg,{},301),1)
   self.assertEqual(self.status()[0],'sent')
  def test_no_friend_no_dm(self):
   moderation.ingest(self.db,self.notice(),self.cfg,100)
   call,targets=self.mock_api(friends=[])
-  with patch('moderation.agent.onebot_call',side_effect=call):
+  with patch('app.moderation.agent.onebot_call',side_effect=call):
    self.assertEqual(moderation.flush(self.db,self.cfg,{},101),0)
   self.assertEqual(targets,[])
   self.assertEqual(self.status()[0],'no_friend_admin')
@@ -116,7 +116,7 @@ class ModerationTests(unittest.TestCase):
   moderation.ingest(self.db,self.notice(),self.cfg,100)
   members=[{'user_id':2,'role':'owner'},{'user_id':3,'role':'admin'}]
   call,targets=self.mock_api(members=members,friends=[3])
-  with patch('moderation.agent.onebot_call',side_effect=call):
+  with patch('app.moderation.agent.onebot_call',side_effect=call):
    self.assertEqual(moderation.flush(self.db,self.cfg,{},101),1)
   self.assertEqual(targets,[3])
  def test_appeal_text_generated_by_model(self):
@@ -126,7 +126,7 @@ class ModerationTests(unittest.TestCase):
    sent.append(payload['message'][0]['data']['text']);return {'message_id':88}
   call,targets=self.mock_api(send=send)
   model={'enabled':True,'model':'m','base_url':'http://x','api_key':'fake'}
-  with patch('moderation.agent.onebot_call',side_effect=call),patch('social.load_model',return_value=model),patch('social.generate_text',return_value=('{"text":"大哥我哪句说错了你直接指，别一声不吭就禁言啊"}',{'prompt_tokens':9,'completion_tokens':7})) as gen:
+  with patch('app.moderation.agent.onebot_call',side_effect=call),patch('app.social.load_model',return_value=model),patch('app.social.generate_text',return_value=('{"text":"大哥我哪句说错了你直接指，别一声不吭就禁言啊"}',{'prompt_tokens':9,'completion_tokens':7})) as gen:
    self.assertEqual(moderation.flush(self.db,self.cfg,{},101),1)
   self.assertEqual(sent,['大哥我哪句说错了你直接指，别一声不吭就禁言啊'])
   payload=gen.call_args.args[2]
@@ -137,7 +137,7 @@ class ModerationTests(unittest.TestCase):
   sent=[]
   call,targets=self.mock_api(send=lambda p:(sent.append(p['message'][0]['data']['text']),{'message_id':88})[1])
   model={'enabled':True,'model':'m','base_url':'http://x','api_key':'fake'}
-  with patch('moderation.agent.onebot_call',side_effect=call),patch('social.load_model',return_value=model),patch('social.generate_text',side_effect=TimeoutError()):
+  with patch('app.moderation.agent.onebot_call',side_effect=call),patch('app.social.load_model',return_value=model),patch('app.social.generate_text',side_effect=TimeoutError()):
    self.assertEqual(moderation.flush(self.db,self.cfg,{},101),1)
   self.assertEqual(sent,[moderation.APPEAL])
  def test_appeal_uses_global_sticker_as_second_message(self):
@@ -157,7 +157,7 @@ class ModerationTests(unittest.TestCase):
    raise AssertionError(action)
   model={'enabled':True,'model':'m','base_url':'http://x','api_key':'fake'}
   reply='{"text":"哪条群规？给个说法","sticker_id":"%s"}'%identity
-  with patch('moderation.agent.onebot_call',side_effect=call),patch('social.load_model',return_value=model),patch('social.generate_text',return_value=(reply,{'prompt_tokens':9,'completion_tokens':7})):
+  with patch('app.moderation.agent.onebot_call',side_effect=call),patch('app.social.load_model',return_value=model),patch('app.social.generate_text',return_value=(reply,{'prompt_tokens':9,'completion_tokens':7})):
    self.assertEqual(moderation.flush(self.db,cfg,{},101),1)
   self.assertEqual(len(messages),2)
   self.assertEqual([p['type'] for p in messages[0]],['text'])
@@ -169,7 +169,7 @@ class ModerationTests(unittest.TestCase):
   moderation.ingest(self.db,self.notice(100,duration=100000),self.cfg,100)
   members=[{'user_id':1,'shut_up_timestamp':99999},{'user_id':2,'role':'owner'}]
   call,targets=self.mock_api(members=members)
-  with patch('moderation.agent.onebot_call',side_effect=call) as mocked:
+  with patch('app.moderation.agent.onebot_call',side_effect=call) as mocked:
    # First appeal goes out immediately.
    self.assertEqual(moderation.flush(self.db,self.cfg,{},101),1)
    self.assertEqual(self.status()[0],'sent')

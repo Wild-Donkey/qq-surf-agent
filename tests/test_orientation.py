@@ -1,7 +1,7 @@
 import json,tempfile,time,unittest
 from pathlib import Path
 from unittest.mock import patch
-import archive,orientation,application,sessions,workflow,social,identities
+from app import archive, orientation, application, sessions, workflow, social, identities
 
 class OrientationTests(unittest.TestCase):
  def test_archive_group_cutoff_and_evidence_validation(self):
@@ -40,7 +40,7 @@ class OrientationTests(unittest.TestCase):
      return {'action':'read','call':{'name':'set_group_context','arguments':{'topics':['电脑运行'],'referents':[],'open_interactions':[]}},'text':''},{}
     self.assertIn('orientation',payload['group_context'])
     return {'action':'reply','text':'那散热得跟上'},{}
-   with patch('social.load_model',return_value={'enabled':True,'api_key':'fake'}),patch('social.call_model',side_effect=infer) as call:
+   with patch('app.social.load_model',return_value={'enabled':True,'api_key':'fake'}),patch('app.social.call_model',side_effect=infer) as call:
     social.tick(db,cfg)
    self.assertEqual(call.call_count,2);self.assertEqual(db.execute('select count(*) from deliveries').fetchone()[0],1)
    db.close()
@@ -49,5 +49,5 @@ class OrientationTests(unittest.TestCase):
    cfg={'bot_id':'99','mode':'live','groups':[{'id':'1','name':'A'}],'context_dir':root,'interaction':{'enabled':True,'quiet_seconds':0,'orientation_enabled':True}}
    db=workflow.connect(':memory:');now=time.time()
    workflow.ingest(db,{'post_type':'message','message_type':'group','group_id':1,'user_id':7,'message_id':1,'message':[{'type':'text','data':{'text':'不明白的对话'}}]},cfg,now-10)
-   with patch('social.load_model',return_value={'enabled':True,'api_key':'fake'}),patch('social.call_model',return_value=({'action':'reply','text':'随口猜一句'},{})):social.tick(db,cfg)
+   with patch('app.social.load_model',return_value={'enabled':True,'api_key':'fake'}),patch('app.social.call_model',return_value=({'action':'reply','text':'随口猜一句'},{})):social.tick(db,cfg)
    self.assertEqual(db.execute('select count(*) from deliveries').fetchone()[0],0);db.close()

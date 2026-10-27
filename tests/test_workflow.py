@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-import workflow as w
+from app import workflow as w
 
 
 class WorkflowTests(unittest.TestCase):
@@ -30,7 +30,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(w.ingest(self.db,self.event(2,2),self.cfg,1001),'duplicate_content')
         self.cfg['mode']='live'
         w.set_candidate(self.db,1,'approved')
-        with patch('agent.onebot_call',side_effect=[{'user_id':99},{'message_id':42}]) as api:
+        with patch('app.agent.onebot_call',side_effect=[{'user_id':99},{'message_id':42}]) as api:
             self.assertEqual(w.dispatch(self.db,self.cfg,{},1002),1)
             self.assertEqual(api.call_args[0][2]['group_id'],3)
     def test_private_self_old_and_loop(self):
@@ -41,22 +41,22 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.db.execute('select count(*) from deliveries').fetchone()[0],0)
     def test_pending_and_preview_never_send(self):
         w.ingest(self.db,self.event(),self.cfg,1000)
-        with patch('agent.onebot_call') as api:
+        with patch('app.agent.onebot_call') as api:
             w.dispatch(self.db,self.cfg,{},1001)
             api.assert_not_called()
         w.set_candidate(self.db,1,'approved')
-        with patch('agent.onebot_call') as api:
+        with patch('app.agent.onebot_call') as api:
             w.dispatch(self.db,self.cfg,{},1001)
             api.assert_not_called()
     def test_rate_limit_and_no_ambiguous_retry(self):
         w.ingest(self.db,self.event(),self.cfg,1000)
         w.set_candidate(self.db,1,'approved'); self.cfg['mode']='live'
-        with patch('agent.onebot_call',side_effect=[{'user_id':99},TimeoutError()]):
+        with patch('app.agent.onebot_call',side_effect=[{'user_id':99},TimeoutError()]):
             self.assertEqual(w.dispatch(self.db,self.cfg,{},1001),0)
         self.assertEqual(self.db.execute("select count(*) from deliveries where status='uncertain'").fetchone()[0],1)
-        with patch('agent.onebot_call',side_effect=[{'user_id':99},{'message_id':42}]):
+        with patch('app.agent.onebot_call',side_effect=[{'user_id':99},{'message_id':42}]):
             self.assertEqual(w.dispatch(self.db,self.cfg,{},1002),1)
-        with patch('agent.onebot_call',return_value={'user_id':99}) as api:
+        with patch('app.agent.onebot_call',return_value={'user_id':99}) as api:
             self.assertEqual(w.dispatch(self.db,self.cfg,{},1003),0)
             self.assertEqual(api.call_count,1)
     def test_context_bounds_and_retention(self):
@@ -85,7 +85,7 @@ class WorkflowTests(unittest.TestCase):
         w.ingest(self.db,self.event(),self.cfg,1000)
         self.assertEqual(self.db.execute('select count(*) from deliveries').fetchone()[0],1)
         w.set_candidate(self.db,1,'approved'); self.cfg['mode']='live'
-        with patch('agent.onebot_call',return_value={'user_id':123}):
+        with patch('app.agent.onebot_call',return_value={'user_id':123}):
             with self.assertRaises(ValueError):w.dispatch(self.db,self.cfg,{},1001)
     def test_expired_candidate_not_sent(self):
         w.ingest(self.db,self.event(),self.cfg,1000);w.set_candidate(self.db,1,'approved')
@@ -98,7 +98,7 @@ class WorkflowTests(unittest.TestCase):
         self.db.execute('DELETE FROM group_activity WHERE group_id=?',('3',))
         self.db.commit()
         w.ingest(self.db,self.event(),self.cfg,1000);w.set_candidate(self.db,1,'approved')
-        with patch('agent.onebot_call',return_value={'user_id':99}) as api:
+        with patch('app.agent.onebot_call',return_value={'user_id':99}) as api:
             self.assertEqual(w.dispatch(self.db,self.cfg,{},1001),0)
             self.assertEqual(api.call_count,1)
         self.assertFalse(w.group_is_active(self.db,'2',self.cfg,1001))
@@ -110,15 +110,15 @@ class WorkflowTests(unittest.TestCase):
     def test_daily_limit_and_cooldown(self):
         self.cfg.update(mode='live',routes={'1':['2']},max_per_group_day=1,group_cooldown_seconds=0)
         w.ingest(self.db,self.event(),self.cfg,1000);w.set_candidate(self.db,1,'approved')
-        with patch('agent.onebot_call',side_effect=[{'user_id':99},{'message_id':42}]):
+        with patch('app.agent.onebot_call',side_effect=[{'user_id':99},{'message_id':42}]):
             self.assertEqual(w.dispatch(self.db,self.cfg,{},1001),1)
         w.ingest(self.db,self.event(2,text='第二条 https://example.com/b'),self.cfg,1002)
         w.set_candidate(self.db,2,'approved')
-        with patch('agent.onebot_call',return_value={'user_id':99}) as api:
+        with patch('app.agent.onebot_call',return_value={'user_id':99}) as api:
             self.assertEqual(w.dispatch(self.db,self.cfg,{},1003),0)
             self.assertEqual(api.call_count,1)
         self.cfg.update(max_per_group_day=10,group_cooldown_seconds=3600)
-        with patch('agent.onebot_call',return_value={'user_id':99}):
+        with patch('app.agent.onebot_call',return_value={'user_id':99}):
             self.assertEqual(w.dispatch(self.db,self.cfg,{},1100),0)
 
     def test_same_image_with_different_caption(self):

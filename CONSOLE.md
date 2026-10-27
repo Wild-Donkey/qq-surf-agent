@@ -1,6 +1,6 @@
 # 终端控制台
 
-双击 `Surf Console.command`，或在项目目录运行 `python3 console.py`，默认启动 Lite。需要彩色完整界面时使用 `python3 console.py --full`。Lite 的并行输入组件安装到项目本地：`python3 -m pip install --target runtime/deps -r requirements-lite.txt`。完整界面仍使用标准库 curses。
+双击 `Surf Console.command`，或在项目目录运行 `python3 -m app.console`，默认启动 Lite。需要彩色完整界面时使用 `python3 -m app.console --full`。Lite 的并行输入组件安装到项目本地：`python3 -m pip install --target runtime/deps -r requirements-lite.txt`。完整界面仍使用标准库 curses。
 
 QQ Helper 消息、应用处理日志、局面理解、发送回执和命令结果按时间混排在同一信息流，底部始终可以输入。Tab 补全命令、服务子命令、群名和群号；首次显示多个候选，再按 Tab 循环选中。↑/↓ 按显示行滚动，鼠标滚轮滚动，PgUp/PgDn 翻页，End 回到实时；左右键编辑输入，Ctrl-P/Ctrl-N 找回本次输入历史。Ctrl-U 清空输入。`/quit` 或 Ctrl-C 仅退出界面，两个后台服务继续运行。
 
@@ -49,9 +49,9 @@ QQ Helper 封装运行在独立后台进程，持有单实例锁；控制台不�
 也可执行单条命令，便于脚本调用：
 
 ```text
-python3 console.py --command /status
-python3 console.py --command '/use 棺材房'
-python3 console.py --command '/worker 观察最新话题，不需要强行回复'
+python3 -m app.console --command /status
+python3 -m app.console --command '/use 棺材房'
+python3 -m app.console --command '/worker 观察最新话题，不需要强行回复'
 ```
 
 ## 聊天日志和截图
@@ -62,15 +62,15 @@ python3 console.py --command '/worker 观察最新话题，不需要强行回复
 
 ## Lite 模式
 
-终端不方便使用全屏界面时，运行 `python3 console.py --lite`，或双击 `Surf Lite.command`。Lite 使用单列信息流加输入栏，显示同样的 QQ 消息、应用日志与局面理解；不设置群色/人色、不读取头像。滚动由应用管理，支持鼠标双向滚轮、↑↓、PageUp/PageDown，End回实时；读历史时新消息不抢阅读位置。
+终端不方便使用全屏界面时，运行 `python3 -m app.console --lite`，或双击 `Surf Lite.command`。Lite 使用单列信息流加输入栏，显示同样的 QQ 消息、应用日志与局面理解；不设置群色/人色、不读取头像。滚动由应用管理，支持鼠标双向滚轮、↑↓、PageUp/PageDown，End回实时；读历史时新消息不抢阅读位置。
 
-仍可输入 `/use`、`/say`、`/paste`、`/worker`、`/pause` 等命令，命令结果会就地显示。正常交互终端使用 prompt_toolkit 保留输入并原地刷新：打字期间聊天仍会更新，Tab 补全不受影响。启动时清除遗留终端状态，再由Lite接管聊天区域的滚动；不设置群色、人色。简单管道或 TERM=dumb 环境保留逐行输入模式。`/help` 列出可用命令，`/quit` 只退出界面。
+仍可输入 `/use`、`/say`、`/paste`、`/worker`、`/pause` 等命令，命令结果会就地显示。正常交互终端优先使用 urwid 全屏渲染（单色：终端默认色、仅方向箭头/群名/提示符用粗体强调，无背景填充），兼容 VT100/ANSI 等任意终端并自动降级色深；不可用时回退 prompt_toolkit，再回退 readline 逐行模式。打字期间聊天仍会更新，Tab 补全不受影响。启动时清除遗留终端状态，再由 Lite 接管聊天区域的滚动；不设置群色、人色。简单管道或 TERM=dumb 环境保留逐行输入模式。`/help` 列出可用命令，`/quit` 只退出界面。
 
 标准界面向上查看历史时，新消息不会把当前阅读位置推走；顶部的“历史”状态显示距离实时的行数。按 End 恢复跟随最新消息。信息流保存滚动位置，长消息也能逐行查看。Lite 有独立的单列历史滚动，不依赖终端原生回滚。
 
 macOS 旧版 curses 缺少第5按钮常量时，控制台直接解析 SGR 鼠标事件以支持双向滚轮；不把鼠标协议字节插入命令输入。关闭控制台会恢复终端鼠标模式。
 
-控制台默认以 Lite 启动。需要彩色完整界面时使用 `python3 console.py --full`。交互控制台设有单实例锁；重复启动会提示复用已有窗口，不影响QQ Helper和bot服务。单条 `--command` 操作不受此限制。
+控制台默认以 Lite 启动。需要彩色完整界面时使用 `python3 -m app.console --full`。交互控制台设有单实例锁；重复启动会提示复用已有窗口，不影响QQ Helper和bot服务。单条 `--command` 操作不受此限制。
 
 ### 结构化记忆更新
 

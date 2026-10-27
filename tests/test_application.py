@@ -1,7 +1,7 @@
 import unittest,json,tempfile,time
 from pathlib import Path
 from unittest.mock import patch
-import application,workflow,participants,social
+from app import application, workflow, participants, social
 class ApplicationTests(unittest.TestCase):
  def test_worker_only_calls_exposed_api(self):
   self.assertEqual(social.validate_decision('{"call":{"name":"reply","arguments":{"text":"好","quality":"natural"}}}')['action'],'reply')

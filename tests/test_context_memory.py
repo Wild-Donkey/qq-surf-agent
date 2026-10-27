@@ -1,6 +1,6 @@
 import json,tempfile,time,unittest
 from pathlib import Path
-import memory_store,context_memory,identities
+from app import memory_store, context_memory, identities
 
 class ContextMemoryTests(unittest.TestCase):
  def test_proactive_topic_recall_separates_uncertainty_and_boundaries(self):

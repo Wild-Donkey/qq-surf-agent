@@ -44,7 +44,7 @@ python3 -m unittest discover -s tests -p 'test_protocol.py' -v
 | test_http_chunks.py | 本地 HTTP 回调集成，需要回环端口权限 |
 | test_lite_pty.py | 真实终端集成，需要 POSIX PTY 和 prompt_toolkit |
 
-`test_protocol.py` 的路径是 repairs.py 自动恢复流程的固定入口，需保留。
+`test_protocol.py` 的路径是 app/repairs.py 自动恢复流程的固定入口，需保留。
 平台或依赖相关集成测试独立存放，避免其导入失败影响其他功能测试。
 环境报错应修复依赖或权限，不能通过删除或跳过断言来制造通过结果。
 

@@ -7,13 +7,13 @@ import tempfile
 import time
 import json
 from unittest.mock import patch
-import workflow
-import social
-import application
-import replies
-import emoticons
+from app import workflow
+from app import social
+from app import application
+from app import replies
+from app import emoticons
 import hashlib
-import vision
+from app import vision
 import base64
 import io
 
@@ -30,7 +30,7 @@ class ReplyFormsTests(unittest.TestCase):
   d=application.decision(application.decode(json.dumps({'call':{'name':'finish_turn','arguments':{'action':'reply','reply_parts':parts,'quality':'natural'}}})))
   cid=social.apply_decision(self.db,self.job,d,{},self.cfg,self.now)
   self.assertIsNotNone(cid)
-  with patch('participants.humans_recent',return_value=True),patch('workflow.newer_context',return_value=False),patch('agent.onebot_call',side_effect=[{'user_id':99},{'message_id':42}]) as api:
+  with patch('app.participants.humans_recent',return_value=True),patch('app.workflow.newer_context',return_value=False),patch('app.agent.onebot_call',side_effect=[{'user_id':99},{'message_id':42}]) as api:
    self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+1),1)
   sent=[c.args[2] for c in api.call_args_list if c.args[1]=='send_group_msg']
   self.assertEqual(len(sent),1);self.assertEqual([p['type'] for p in sent[0]['message']],['face','text','face'])
@@ -48,7 +48,7 @@ class ReplyFormsTests(unittest.TestCase):
    social.apply_decision(self.db,self.job,{'action':'reply','text':'','reply_parts':[{'emoticon':{'kind':'face','id':self.face}}]}, {},self.cfg,self.now)
   self.assertEqual(self.db.execute('SELECT count(*) FROM deliveries').fetchone()[0],1)
  def test_recent_sticker_is_rejected(self):
-  with patch('emoticons.safe_selection',return_value={'kind':'sticker','id':'x'}),patch('emoticons.recent_echo',return_value=True):
+  with patch('app.emoticons.safe_selection',return_value={'kind':'sticker','id':'x'}),patch('app.emoticons.recent_echo',return_value=True):
    with self.assertRaises(ValueError):replies.prepare(self.cfg,'1',[{'emoticon':{'kind':'sticker','id':'x'}}])
 
 
@@ -61,7 +61,7 @@ class EmoticonTests(unittest.TestCase):
    with self.assertRaises(ValueError):emoticons.segments(root,'1',{'kind':'face','id':'999999'})
  def test_cached_sticker_isolated_by_group(self):
   with tempfile.TemporaryDirectory() as root:
-   with patch('vision.fetch',return_value=(b'jpeg-data',False)):
+   with patch('app.vision.fetch',return_value=(b'jpeg-data',False)):
     clean,_=vision.prepare({'_vision':[{'reference':'a','url':'https://gchat.qpic.cn/a','cache_root':root,'group_id':'1','event_key':'1:2'}]})
    key=clean['vision_status']['attached'][0]['media_key'];emoticons.learn(root,'1','url','笑哭猫猫',key)
    item=emoticons.search(root,'1')[0]
@@ -129,16 +129,16 @@ class StickerLibraryTests(unittest.TestCase):
   from PIL import Image
   out=io.BytesIO();Image.new('RGB',(20,20),'red').save(out,format='GIF',save_all=True,append_images=[Image.new('RGB',(20,20),'blue')],duration=100,loop=0);raw=out.getvalue()
   item={'reference':'a','url':'https://gchat.qpic.cn/a','cache_root':str(self.root),'group_id':'1','event_key':'1:2','metadata':{'_sticker_hint':True}}
-  with patch('vision.fetch',side_effect=lambda url:vision.decode_image(raw)):
+  with patch('app.vision.fetch',side_effect=lambda url:vision.decode_image(raw)):
    clean,images=vision.prepare({'_vision':[item]})
   meta=clean['vision_status']['attached'][0]
   self.assertTrue(meta['animated_first_frame']);self.assertTrue(meta['original_key'].endswith('.gif'));self.assertEqual((self.root/'media'/meta['original_key']).read_bytes(),raw)
-  with patch('vision.resolve',side_effect=AssertionError('must use cache')):
+  with patch('app.vision.resolve',side_effect=AssertionError('must use cache')):
    cached,_=vision.prepare({'_vision':[dict(item)]})
   self.assertEqual(cached['vision_status']['attached'][0]['original_key'],meta['original_key'])
   identity=emoticons.learn(self.root,'1','','跳舞',meta['media_key'],original_key=meta['original_key'])
   preview=emoticons.preview(self.root,'1',identity)
-  with patch('vision.resolve',side_effect=AssertionError('offline preview')):
+  with patch('app.vision.resolve',side_effect=AssertionError('offline preview')):
    viewed,_=vision.prepare({'_vision':[preview]})
   self.assertEqual(viewed['vision_status']['attached'][0]['original_key'],meta['original_key'])
  def test_search_preview_review_and_send_via_application(self):
@@ -146,7 +146,7 @@ class StickerLibraryTests(unittest.TestCase):
   cfg={'context_dir':str(self.root)};payload={};db=workflow.connect(':memory:')
   results=application.read(db,cfg,'1',payload,{'name':'search_emoticons','arguments':{'include_unreviewed':True}});identity=results['stickers'][0]['id']
   result=application.read(db,cfg,'1',payload,{'name':'view_emoticon','arguments':{'id':identity}})
-  with patch('vision.resolve',side_effect=AssertionError('offline')):clean,_=vision.prepare(payload)
+  with patch('app.vision.resolve',side_effect=AssertionError('offline')):clean,_=vision.prepare(payload)
   payload['_attached_images']=clean['vision_status']['attached']
   self.assertEqual(payload['_attached_images'][0]['sticker_id'],identity)
   application.update_states(cfg,'1',payload,{'images':[{'reference':result['reference'],'description':'猫猫无语','is_sticker':True,'tags':['无语']}]},db)
@@ -203,7 +203,7 @@ class StickerLibraryTests(unittest.TestCase):
    if action=='get_login_info':return {'user_id':99}
    if action=='send_group_msg':sent.append(payload['message']);return {'message_id':42}
    raise AssertionError(action)
-  with patch('agent.onebot_call',side_effect=call),patch('participants.humans_recent',return_value=True):
+  with patch('app.agent.onebot_call',side_effect=call),patch('app.participants.humans_recent',return_value=True):
    self.assertEqual(workflow.dispatch(db,cfg,{},101),1)
   self.assertEqual(len(sent),2)
   self.assertEqual([p['type'] for p in sent[0]],['text'])
@@ -220,7 +220,7 @@ class StickerLibraryTests(unittest.TestCase):
    if action=='get_login_info':return {'user_id':99}
    if action=='send_group_msg':sent.append(payload['message']);return {'message_id':43}
    raise AssertionError(action)
-  with patch('agent.onebot_call',side_effect=call),patch('participants.humans_recent',return_value=True):
+  with patch('app.agent.onebot_call',side_effect=call),patch('app.participants.humans_recent',return_value=True):
    self.assertEqual(workflow.dispatch(db,cfg,{},101),1)
   self.assertEqual(len(sent),1)
   self.assertEqual([p['type'] for p in sent[0]],['image'])
@@ -252,14 +252,14 @@ class StickerReactionTests(unittest.TestCase):
   d={'action':'reply','text':'','emoticon':{'kind':'sticker','id':identity}}
   social.apply_decision(self.db,{'target_group':'1','event_key':'1:fresh'},d,{},self.cfg,self.now)
   self.assertEqual(d['action'],'wait');self.assertEqual(self.db.execute('SELECT count(*) FROM deliveries').fetchone()[0],0)
-  with patch('emoticons.time.time',return_value=self.now+100):
+  with patch('app.emoticons.time.time',return_value=self.now+100):
    d={'action':'reply','text':'','emoticon':{'kind':'sticker','id':identity}}
    social.apply_decision(self.db,{'target_group':'1','event_key':'1:later'},d,{},self.cfg,self.now+100)
   with self.db:self.db.execute('INSERT INTO group_activity VALUES (?,?)',('1',self.now))
-  with patch('agent.onebot_call',side_effect=[{'user_id':99},{'message_id':123}]):self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+101),1)
+  with patch('app.agent.onebot_call',side_effect=[{'user_id':99},{'message_id':123}]):self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+101),1)
   self.assertEqual(self.db.execute('SELECT text FROM candidates').fetchone()[0],'')
   self.assertEqual(emoticons.reactions(self.root,'1','无语'),[])
-  with patch('emoticons.time.time',return_value=self.now+300):self.assertEqual(emoticons.reactions(self.root,'1','无语')[0]['id'],identity)
+  with patch('app.emoticons.time.time',return_value=self.now+300):self.assertEqual(emoticons.reactions(self.root,'1','无语')[0]['id'],identity)
 
 
 if __name__ == '__main__':

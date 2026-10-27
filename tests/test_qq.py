@@ -8,8 +8,8 @@ import sys
 import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import agent
-import qq_events
+from app import agent
+from app import qq_events
 
 
 class QQTests(unittest.TestCase):
@@ -19,7 +19,7 @@ class QQTests(unittest.TestCase):
             agent.collect(db, {}, True)
             db.execute("UPDATE items SET status='approved' WHERE id=1")
             cfg = {'sender': {'mode': 'onebot', 'url': 'http://127.0.0.1:3000', 'group_id': '123', 'expected_self_id': '999'}}
-            with patch('agent.request', return_value=b'{"status":"ok","retcode":0,"data":{"user_id":888}}') as req:
+            with patch('app.agent.request', return_value=b'{"status":"ok","retcode":0,"data":{"user_id":888}}') as req:
                 with self.assertRaises(ValueError):
                     agent.send(db, cfg)
                 self.assertEqual(req.call_count, 1)
@@ -33,7 +33,7 @@ class QQTests(unittest.TestCase):
             agent.collect(db, {}, True)
             db.execute("UPDATE items SET status='approved',image_url='https://example.com/image.png' WHERE id=1")
             cfg = {'sender': {'mode': 'onebot', 'url': 'http://127.0.0.1:3000', 'group_id': '123', 'send_images': True, 'expected_self_id': '999'}}
-            with patch('agent.request', side_effect=[b'{"status":"ok","retcode":0,"data":{"user_id":999}}', b'{"status":"ok","retcode":0,"data":{"message_id":42}}']) as req, patch('agent.time.sleep'):
+            with patch('app.agent.request', side_effect=[b'{"status":"ok","retcode":0,"data":{"user_id":999}}', b'{"status":"ok","retcode":0,"data":{"message_id":42}}']) as req, patch('app.agent.time.sleep'):
                 agent.send(db, cfg)
                 self.assertEqual(req.call_args[0][1]['group_id'], 123)
                 self.assertEqual([p['type'] for p in req.call_args[0][1]['message']], ['text', 'image'])
@@ -64,12 +64,12 @@ class QQTests(unittest.TestCase):
 
     def test_local_onebot_contract(self):
         cfg = {'sender': {'url': 'http://127.0.0.1:3000'}}
-        with patch('agent.request', return_value=b'{"status":"ok","retcode":0,"data":{"message_id":42}}') as req:
+        with patch('app.agent.request', return_value=b'{"status":"ok","retcode":0,"data":{"message_id":42}}') as req:
             data = agent.onebot_call(cfg, 'send_group_msg', {'group_id': 123, 'message': [{'type': 'text', 'data': {'text': '[CQ:at,qq=all]'}}]})
             self.assertEqual(data['message_id'], 42)
             self.assertEqual(req.call_args[0][0], 'http://127.0.0.1:3000/send_group_msg')
             self.assertIsInstance(req.call_args[0][1]['message'], list)
-        with patch('agent.request', return_value=b'{"status":"ok","retcode":0,"data":{}}'):
+        with patch('app.agent.request', return_value=b'{"status":"ok","retcode":0,"data":{}}'):
             with self.assertRaises(ValueError):
                 agent.onebot_call(cfg, 'send_group_msg')
         cfg['sender']['url'] = 'https://example.com'

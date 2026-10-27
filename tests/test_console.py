@@ -8,15 +8,15 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
-import console
-import operator_control
-import workflow
-import service_log
-import social
-import completion
-import qq
-from memory import MarkdownMemory
-from sessions import SessionPool
+from app import console
+from app import operator_control
+from app import workflow
+from app import service_log
+from app import social
+from app import completion
+from app import qq
+from app.memory import MarkdownMemory
+from app.sessions import SessionPool
 
 
 class ConsoleTests(unittest.TestCase):
@@ -45,7 +45,7 @@ class ConsoleTests(unittest.TestCase):
   with self.assertRaises(ValueError):operator_control.submit(self.db,self.cfg,'2','发消息')
  def test_say_does_not_execute_slash_command(self):
   controller=console.Controller();controller.group='1'
-  with patch('console.qq.load',return_value=(self.cfg,{},self.db)),patch('console.qq.send',return_value={'message_id':1}) as send:
+  with patch('app.console.qq.load',return_value=(self.cfg,{},self.db)),patch('app.console.qq.send',return_value={'message_id':1}) as send:
    controller.execute('/say /bot stop');self.assertEqual(send.call_args.args[4],'/bot stop')
  def test_pending_prompt_budget_retains_remainder(self):
   for _ in range(3):operator_control.submit(self.db,self.cfg,'1','x'*6000,self.now)
@@ -57,31 +57,31 @@ class ConsoleTests(unittest.TestCase):
   event={'post_type':'message','message_type':'group','group_id':1,'user_id':7,'message_id':1,'time':self.now-10,'message':[{'type':'text','data':{'text':'普通聊天'}}]}
   workflow.ingest(self.db,event,self.cfg,self.now-10)
   ident=operator_control.submit(self.db,self.cfg,'1','只观察，别硬聊',self.now-9)
-  with patch('social.load_model',return_value={'enabled':True,'api_key':'fake'}),patch('social.call_model',return_value=({'action':'wait','text':''},{})) as model:
+  with patch('app.social.load_model',return_value={'enabled':True,'api_key':'fake'}),patch('app.social.call_model',return_value=({'action':'wait','text':''},{})) as model:
    social.tick(self.db,self.cfg)
   self.assertEqual(model.call_args.args[1]['operator_prompts'][0]['id'],ident)
   self.assertEqual(self.db.execute('SELECT status FROM operator_prompts').fetchone()[0],'applied')
 
  def test_helper_does_not_duplicate_existing_connection(self):
-  with patch('console.alive',return_value=None),patch('console.agent.onebot_call',return_value={'online':True}),patch('console.spawn') as spawn:
+  with patch('app.console.alive',return_value=None),patch('app.console.agent.onebot_call',return_value={'online':True}),patch('app.console.spawn') as spawn:
    self.assertIn('已有QQ连接',console.helper(self.cfg,{},'start'));spawn.assert_not_called()
  def test_helper_does_not_stop_external_instance(self):
-  with patch('console.alive',return_value=None),patch('console.os.kill') as kill:
+  with patch('app.console.alive',return_value=None),patch('app.console.os.kill') as kill:
    with self.assertRaises(ValueError):console.helper(self.cfg,{},'stop')
    kill.assert_not_called()
  def test_helper_wrap_checks_account_before_termination(self):
-  with patch('console.alive',return_value=None),patch('console.agent.onebot_call',side_effect=[{'online':True},{'user_id':100}]),patch('console.os.kill') as kill:
+  with patch('app.console.alive',return_value=None),patch('app.console.agent.onebot_call',side_effect=[{'online':True},{'user_id':100}]),patch('app.console.os.kill') as kill:
    with self.assertRaises(ValueError):console.helper(self.cfg,{},'wrap')
    kill.assert_not_called()
  def test_redact_json_tokens(self):self.assertNotIn('abc-secret',service_log.clean('{"token":"abc-secret"}'))
 
  def test_lite_is_default_with_full_override(self):
   from types import SimpleNamespace
-  with patch('console.ROOT',self.root):
+  with patch('app.console.ROOT',self.root):
    self.assertTrue(console.lite_default(SimpleNamespace(full=False,lite=False)))
    self.assertFalse(console.lite_default(SimpleNamespace(full=True,lite=False)))
  def test_single_console_lock_released_on_close(self):
-  with patch('console.ROOT',self.root):
+  with patch('app.console.ROOT',self.root):
    first=console.console_lock()
    try:
     with self.assertRaises(SystemExit):console.console_lock()
@@ -122,7 +122,7 @@ class CompletionTests(unittest.TestCase):
         with db:
             db.execute('INSERT INTO group_activity VALUES (?,?)', ('1', time.time()))
         try:
-            with patch('agent.onebot_call', side_effect=[{'user_id': 99}, {'message_id': 123}]) as api:
+            with patch('app.agent.onebot_call', side_effect=[{'user_id': 99}, {'message_id': 123}]) as api:
                 qq.send(db, {'bot_id': 99}, {}, '1', '我来接话')
             self.assertEqual(api.call_args.args[2]['message'][0]['data']['text'], '【人工接管】 我来接话')
             self.assertEqual(qq.manual_text('【人工接管】 已标记'), '【人工接管】 已标记')
@@ -158,7 +158,7 @@ class SessionAndCLITests(unittest.TestCase):
         with db:db.execute('INSERT INTO group_activity VALUES (?,?)',('1',now))
         cfg={'bot_id':'99','operator_pause_minutes':5}
         try:
-            with patch('agent.onebot_call',side_effect=[{'user_id':99},{'message_id':123}]):
+            with patch('app.agent.onebot_call',side_effect=[{'user_id':99},{'message_id':123}]):
                 qq.send(db,cfg,{},'1','我来接话')
             self.assertEqual(db.execute('select count(*) from operator_pause').fetchone()[0],0)
             self.assertEqual(db.execute('select status from operator_log').fetchone()[0],'sent')
@@ -168,7 +168,7 @@ class SessionAndCLITests(unittest.TestCase):
         try:
             with self.assertRaises(ValueError):qq.send(db,{'bot_id':'99'},{},'1','唤醒沉寂群',dry_run=True)
             with db:db.execute('INSERT INTO group_activity VALUES (?,?)',('1',time.time()))
-            with patch('agent.onebot_call') as call:
+            with patch('app.agent.onebot_call') as call:
                 qq.send(db,{'bot_id':'99'},{},'1','预览',dry_run=True);call.assert_not_called()
         finally:db.close()
 

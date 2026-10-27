@@ -5,7 +5,7 @@ import unittest
 import tempfile
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import agent
+from app import agent
 
 
 class AgentTests(unittest.TestCase):
@@ -31,7 +31,7 @@ class AgentTests(unittest.TestCase):
         agent.collect(self.db, self.cfg, True)
         self.assertEqual(self.db.execute('select count(*) from items').fetchone()[0], 2)
         self.db.execute("update items set status='approved'")
-        with patch('agent.request') as network:
+        with patch('app.agent.request') as network:
             agent.send(self.db, self.cfg)
             network.assert_not_called()
         self.assertEqual(self.db.execute("select count(*) from items where status='approved'").fetchone()[0], 2)
@@ -40,21 +40,21 @@ class AgentTests(unittest.TestCase):
         agent.collect(self.db, self.cfg, True)
         self.db.execute("update items set status='approved' where id=1")
         self.cfg['sender'] = {'mode': 'bridge', 'url': 'http://localhost/send', 'group_id': 'test'}
-        with patch('agent.request', side_effect=TimeoutError):
+        with patch('app.agent.request', side_effect=TimeoutError):
             agent.send(self.db, self.cfg)
         self.assertEqual(self.db.execute('select status from items where id=1').fetchone()[0], 'uncertain')
-        with patch('agent.request') as network:
+        with patch('app.agent.request') as network:
             agent.send(self.db, self.cfg)
             network.assert_not_called()
 
     def test_model_response_and_failure(self):
         self.cfg['llm'] = {'enabled': True, 'require_key': False, 'base_url': 'http://localhost/v1', 'model': 'test'}
         response = {'choices': [{'message': {'content': '{"keep":true,"caption":"好玩"}'}}]}
-        with patch('agent.request', return_value=json.dumps(response).encode()):
+        with patch('app.agent.request', return_value=json.dumps(response).encode()):
             text, keep = agent.caption({'url': 'https://example.com/a'}, self.cfg)
             self.assertTrue(keep)
             self.assertEqual(text, '好玩\nhttps://example.com/a')
-        with patch('agent.request', return_value=b'{}'):
+        with patch('app.agent.request', return_value=b'{}'):
             agent.collect(self.db, self.cfg, True)
         self.assertEqual(self.db.execute('select count(*) from items').fetchone()[0], 0)
 

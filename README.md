@@ -2,7 +2,7 @@
 
 一个有离线记忆的 QQ 群友型 bot：观察消息、按需读取群与成员记忆，决定保持安静、自然接话，或分享隔壁群的新素材。
 
-Python 3.9+，主程序使用标准库，ChatGPT 登录验证额外使用 PyJWT。通过本机 OneBot 11 HTTP 服务接入 QQ；模型支持 Chat Completions 兼容接口和官方 ChatGPT 订阅授权。
+Python 3.10+（开发/生产使用 3.12；代码含运行时求值的 `X | Y` 类型注解且未启用 `from __future__ import annotations`，3.9 无法导入），主程序使用标准库，ChatGPT 登录验证额外使用 PyJWT。通过本机 OneBot 11 HTTP 服务接入 QQ；模型支持 Chat Completions 兼容接口和官方 ChatGPT 订阅授权。
 
 ## 消息流程
 
@@ -33,7 +33,7 @@ runtime/                         # 数据库、日志、PID、停止请求；也
 
 每次模型请求只读取本次相关的 persona、group、people 片段，以及目标群最近几条消息；不把完整聊天历史持续累积在在线 conversation 中。没有 previous_response_id 或服务端会话依赖。
 
-- 活跃会话的 Markdown 默认每60秒更新一次；连续5分钟无相关活动时立即写回并释放会话，可执行 `python3 botctl.py flush` 立即写回。
+- 活跃会话的 Markdown 默认每60秒更新一次；连续5分钟无相关活动时立即写回并释放会话，可执行 `python3 -m app.botctl flush` 立即写回。
 - 每群最多保留200条观察，样本保留30天；原始工作上下文保留48小时。
 - Markdown 自动生成区有明确标记，区外的人工补充会保留。
 - 人设保持 bot 身份，不冒充某位真实群友。样本少时写明不确定性。
@@ -50,12 +50,12 @@ runtime/                         # 数据库、日志、PID、停止请求；也
 6. 运行：
 
 ```bash
-python3 botctl.py bootstrap      # 只观察近14天内可读取样本，不创建历史投递任务
-python3 botctl.py model-check    # 一条无真实群聊的模型连通性测试
-python3 supervisor.py            # 单实例守护，异常退出退避重启
+python3 -m app.botctl bootstrap      # 只观察近14天内可读取样本，不创建历史投递任务
+python3 -m app.botctl model-check    # 一条无真实群聊的模型连通性测试
+python3 -m app.supervisor            # 单实例守护，异常退出退避重启
 ```
 
-macOS 也可以双击 `start.command`。`python3 botctl.py stop` 请求停止守护进程。默认没有安装系统登录自启；电脑关机、休眠或 QQ 退出时，不能继续正常处理消息。
+macOS 也可以双击 `start.command`。`python3 -m app.botctl stop` 请求停止守护进程。默认没有安装系统登录自启；电脑关机、休眠或 QQ 退出时，不能继续正常处理消息。
 
 配置内容和模型密钥可以修改后保存，工作周期会重新读取；改变端口、数据库路径或桥接Token后应重启服务。`context_dir` 建议使用绝对路径；示例中的相对路径在项目目录运行时有效。
 
@@ -83,10 +83,10 @@ OpenAI临时配置可使用有访问权限的低价模型。示例保留gpt-5-na
 
 ```bash
 python3 -m pip install --target runtime/deps -r requirements-chatgpt.txt
-python3 chatgpt_auth.py login
+python3 -m app.chatgpt_auth login
 # 在系统浏览器打开 http://127.0.0.1:8768，点击 Continue with ChatGPT 并授权
-python3 chatgpt_auth.py models
-python3 chatgpt_auth.py activate --model <目录中的模型slug>
+python3 -m app.chatgpt_auth models
+python3 -m app.chatgpt_auth activate --model <目录中的模型slug>
 ```
 
 activate 会先使用无群聊数据的请求验证模型，成功后才切换 llm.local.json。登录支持PKCE、state、nonce、JWKS签名与身份校验、独立账号注册记录、原子0600凭据保存和自动轮换refresh token。重新登录默认使用当前注册；添加另一账号可用 login --new。凭据及旧模型配置只存在被忽略的runtime/chatgpt/。不会读取Codex或浏览器的登录凭据。推理仅调用公共/v1/responses，store=false、stream=true，必须完整收到response.completed才采用结果。登录与激活后应重启旧服务以加载新代码。
@@ -108,9 +108,9 @@ onboarding.enabled开启加入群发现：每60秒检查bot已加入的群，新
 ## 检查与验证
 
 ```bash
-python3 botctl.py status
-python3 workflow.py pending
-python3 workflow.py inbox
+python3 -m app.botctl status
+python3 -m app.workflow pending
+python3 -m app.workflow inbox
 python3 -m unittest discover -s tests -v
 ```
 
@@ -118,7 +118,7 @@ python3 -m unittest discover -s tests -v
 
 测试覆盖签名、账号核对、目标绑定、重复事件、跨群已见、图片去重、Markdown写回、召回长度、模型异常退避、每日限额、14天沉寂群保护和告警合并。服务HTTP健康检查：`http://127.0.0.1:8767/health`。
 
-`agent.py`保留独立RSS/Atom采集与本地导入功能；`workflow.py`是群间消息服务，`social.py`是群友交互决策，`memory.py`是离线记忆，`alerts.py`是异常通知，`supervisor.py`负责守护。
+`app/agent.py`保留独立RSS/Atom采集与本地导入功能；`app/workflow.py`是群间消息服务，`app/social.py`是群友交互决策，`app/memory.py`是离线记忆，`app/alerts.py`是异常通知，`app/supervisor.py`负责守护。
 
 ## 仓库内容
 
@@ -147,13 +147,13 @@ human_presence.enabled开启后，程序记录human/bot/unknown及置信度、�
 常驻服务与人工终端分开。双击 `QQ抢话.command` 进入当前目标群；直接输入一行就会以bot账号发送。也可在终端使用：
 
 ```bash
-python3 qq.py groups
-python3 qq.py chat
-python3 qq.py say "群名关键词" "我来接话"
-python3 qq.py say "群名关键词" "只预览" --dry-run
-python3 qq.py dm "发给主人"
-python3 qq.py pause "群名关键词" 5
-python3 qq.py resume "群名关键词"
+python3 -m app.qq groups
+python3 -m app.qq chat
+python3 -m app.qq say "群名关键词" "我来接话"
+python3 -m app.qq say "群名关键词" "只预览" --dry-run
+python3 -m app.qq dm "发给主人"
+python3 -m app.qq pause "群名关键词" 5
+python3 -m app.qq resume "群名关键词"
 ```
 
 交互终端支持 `/groups`、`/use 群名`、`/pause 5`、`/resume` 和 `/quit`。退出终端不停止服务。手动群发言后自动暂停本群bot发言5分钟；暂停期间的旧反应任务不再补答。手动发送也受14天不挖坟规则保护。已在网络途中的一条消息无法靠暂停撤回。私信命令固定发给主人账号。
@@ -164,11 +164,11 @@ python3 qq.py resume "群名关键词"
 
 成员身份基于整个群聊上下文复核，区分维护者和自动账号。people.md 保存当前判断及来源；speaker_judgments 保存判断变更和原话证据。流畅口语不会自动把bot改回human。配置/接口确认优先于模型推断。
 
-应用/worker 边界：应用负责监听、五秒合并、账号类型、持久文件、上下文注入、检索和发送约束。每轮主动加载群与相关成员 Markdown。worker 只调用 application.py 暴露的读取、状态更新、回复/分享接口；finish_turn 一次提交群和成员状态及行动，应用校验对象后落盘。聊天worker输出的任意身份标签不直接入库。
+应用/worker 边界：应用负责监听、五秒合并、账号类型、持久文件、上下文注入、检索和发送约束。每轮主动加载群与相关成员 Markdown。worker 只调用 app/application.py 暴露的读取、状态更新、回复/分享接口；finish_turn 一次提交群和成员状态及行动，应用校验对象后落盘。聊天worker输出的任意身份标签不直接入库。
 
 等待上限：本群连续安静5秒即处理；若一直有消息，第一条未读消息起20秒就固定本轮窗口并开始推理，后续消息进入下一轮。达到上限的回复允许在持续来消息时发送，避免被无限作废；难接或尬聊的候选跳过，状态照常保存。20秒是等待上限，模型与网络时间另计。
 
-批量建档由 profile_service.py 独立进程负责：分页补读近30天最多5000条可见历史，原话永久归档；所有分块先形成群观察，再综合写 group.md，之后逐成员完整读取各自样本（超预算继续分块）更新 people.md。进度在 context/profiling 下持久化，可恢复；不会重放历史为聊天任务，也不会发群消息。group_portrait 和按群隔离的成员画像由应用优先注入实时 worker。后台与聊天共享原子模型启动预算，实时聊天处理期间后台让行。
+批量建档由 app/profile_service.py 独立进程负责：分页补读近30天最多5000条可见历史，原话永久归档；所有分块先形成群观察，再综合写 group.md，之后逐成员完整读取各自样本（超预算继续分块）更新 people.md。进度在 context/profiling 下持久化，可恢复；不会重放历史为聊天任务，也不会发群消息。group_portrait 和按群隔离的成员画像由应用优先注入实时 worker。后台与聊天共享原子模型启动预算，实时聊天处理期间后台让行。
 
 排障闭环：Codex 根据明确的故障阶段选择受控恢复接口；应用执行协议回归测试与真实模型验证后恢复调用，或请求守护进程重启聊天进程并核验心跳，或恢复指定群的画像补读任务。动作和验证结果落 repair_runs；不执行模型给出的任意终端命令，未验证恢复不报已修复。JSON异常会区分流事件和worker接口正文，日志仅存阶段、长度、位置与哈希，不存聊天正文。
 
@@ -202,6 +202,8 @@ python3 qq.py resume "群名关键词"
 
 终端界面：双击 `Surf Console.command`，同时看 QQ Helper 与 surf bot 日志、抢话接管和投递 worker prompt。操作说明见 [CONSOLE.md](CONSOLE.md)。
 
-简化终端可使用 `python3 console.py --lite` 或双击 `Surf Lite.command`：普通逐行聊天，无强制颜色、无右侧bot日志。
+简化终端可使用 `python3 -m app.console --lite` 或双击 `Surf Lite.command`：普通逐行聊天，无强制颜色、无右侧bot日志。
 
 上下文分层、文件职责、schema 与回溯/澄清流程见 [docs/CONTEXT.md](docs/CONTEXT.md)。
+
+进程拓扑、端口边界、运行态文件、tick 管线、健康检查与事故复盘见 [docs/OPERATIONS.md](docs/OPERATIONS.md)。

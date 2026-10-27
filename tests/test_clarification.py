@@ -1,6 +1,6 @@
 import tempfile,time,json,unittest
 from unittest.mock import patch
-import workflow,clarification,identities,request_queue,social
+from app import workflow, clarification, identities, request_queue, social
 
 class ClarificationTests(unittest.TestCase):
  def test_ask_links_request_waits_and_wakes_on_answer(self):
@@ -14,7 +14,7 @@ class ClarificationTests(unittest.TestCase):
    accepted=request_queue.accepts(db,'1',d,payload['pending_requests']);self.assertEqual(accepted,['1:123'])
    delivery=social.apply_decision(db,{'target_group':'1','source_group':'1','event_key':'1:123','trigger_text':''},d,{},cfg,now)
    clarification.bind(db,'1',d,delivery);request_queue.bind(db,'1',accepted,d,delivery,now)
-   with patch('agent.onebot_call',side_effect=[{'user_id':99},{'message_id':456}]):workflow.dispatch(db,cfg,{},now+1)
+   with patch('app.agent.onebot_call',side_effect=[{'user_id':99},{'message_id':456}]):workflow.dispatch(db,cfg,{},now+1)
    request_queue.sync(db,cfg,now+2)
    self.assertEqual(db.execute("SELECT status FROM user_requests WHERE event_key='1:123'").fetchone()[0],'waiting_info')
    answer={**event,'message_id':124,'message':[{'type':'text','data':{'text':'我指的是红黑树'}}]}

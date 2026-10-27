@@ -1,4 +1,4 @@
-import os,pty,subprocess,tempfile,select,time,sys,json
+import os,pty,subprocess,tempfile,select,time,sys,json,fcntl,struct,termios
 from pathlib import Path
 root=Path(__file__).resolve().parents[1];python=sys.executable
 
@@ -10,8 +10,10 @@ class LitePTYTest(unittest.TestCase):
   if not (root/"runtime/deps/prompt_toolkit").exists():self.skipTest("optional lite dependency unavailable")
   with tempfile.TemporaryDirectory() as tmp:
    p=Path(tmp);(p/'runtime/logs').mkdir(parents=True);log=p/'runtime/logs/qq-helper.log';log.write_text(''.join('10-21 16:00:00 [info] bot | 接收 <- 群聊 [测试群(1)] [测试人(2)] history-'+str(n)+'\n' for n in range(120)));(p/'workflow.json').write_text(json.dumps({'groups':[{'id':1,'name':'测试群'}]}))
-   code="import sys;from pathlib import Path;import lite_console;lite_console.ROOT=Path(sys.argv[1]);lite_console.run(controller=type('C',(),{'execute':lambda self,line:'executed:'+line})())"
-   master,slave=pty.openpty();env=dict(os.environ,TERM='xterm-256color',PROMPT_TOOLKIT_NO_CPR='1',SURF_LOG_DIR='/tmp/surf-console-test-logs')
+   code="import sys;from pathlib import Path;from app import lite_console;lite_console.ROOT=Path(sys.argv[1]);lite_console.run(controller=type('C',(),{'execute':lambda self,line:'executed:'+line})())"
+   master,slave=pty.openpty()
+   fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',40,120,0,0))
+   env=dict(os.environ,TERM='xterm-256color',PROMPT_TOOLKIT_NO_CPR='1',SURF_LOG_DIR='/tmp/surf-console-test-logs')
    child=subprocess.Popen([python,'-u','-c',code,tmp],stdin=slave,stdout=slave,stderr=slave,env=env,cwd=root);os.close(slave);data=b''
    def read_for(seconds):
     nonlocal data

@@ -39,7 +39,7 @@ context/
   ui-colors.sqlite3                 可重建的终端配色缓存
 ```
 
-当前没有活动的根目录 `structured/`。`legacy_memory/structured/` 是旧人物结构合并前的快照，由 memory_store.py 写入，用于恢复，不参与 worker 检索，不应继续充当第二份记忆目录。`structured_memory.sqlite3` 的 structured 表示内部有 schema，不代表还需要一个同名文件目录。
+当前没有活动的根目录 `structured/`。`legacy_memory/structured/` 是旧人物结构合并前的快照，由 app/memory_store.py 写入，用于恢复，不参与 worker 检索，不应继续充当第二份记忆目录。`structured_memory.sqlite3` 的 structured 表示内部有 schema，不代表还需要一个同名文件目录。
 
 不通过移动整个 context 目录来解决语义混乱。先明确写入者和事实源，旧快照保持可恢复；临时视图不得反向覆盖权威记忆。
 

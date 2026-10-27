@@ -1,9 +1,9 @@
 import json,tempfile,time,unittest
 from unittest.mock import patch
 from pathlib import Path
-import request_queue as rq,workflow,social,application
-from sessions import SessionPool
-from memory import MarkdownMemory
+from app import request_queue as rq, workflow, social, application
+from app.sessions import SessionPool
+from app.memory import MarkdownMemory
 class RequestQueueTests(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.db=workflow.connect(':memory:');self.now=time.time()
@@ -34,7 +34,7 @@ class RequestQueueTests(unittest.TestCase):
   rq.bind(self.db,'1',ids,d,delivery,self.now)
   self.assertEqual(self.db.execute('SELECT status FROM user_requests').fetchone()[0],'queued')
   self.add(2,'无关新消息',self.now+.001)
-  with patch('agent.onebot_call',side_effect=[{'user_id':99},{'message_id':88}]):self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+1),1)
+  with patch('app.agent.onebot_call',side_effect=[{'user_id':99},{'message_id':88}]):self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+1),1)
   rq.sync(self.db,self.cfg,self.now+2);self.assertEqual(self.db.execute('SELECT status FROM user_requests').fetchone()[0],'done')
  def test_cancellation_stops_queued_action(self):
   self.add(1,'你是谁');d={'action':'reply','text':'我是Luna','request_outcome':'completed'}
@@ -44,7 +44,7 @@ class RequestQueueTests(unittest.TestCase):
   self.assertEqual(self.db.execute('SELECT status FROM deliveries').fetchone()[0],'cancelled')
  def test_busy_turn_cannot_silently_drop_request(self):
   self.add(1,'搬到棺材房给大伙看看')
-  with patch('social.load_model',return_value={'enabled':True,'api_key':'test'}),patch('social.call_model',return_value=({'action':'reply','text':'鱼挺好吃'},{})):
+  with patch('app.social.load_model',return_value={'enabled':True,'api_key':'test'}),patch('app.social.call_model',return_value=({'action':'reply','text':'鱼挺好吃'},{})):
    social.tick(self.db,self.cfg)
   self.assertEqual(len(rq.pending(self.db,'1')),1);self.assertEqual(self.db.execute('SELECT count(*) FROM deliveries').fetchone()[0],0)
  def test_active_checkpoint_preserves_session_cache(self):
@@ -75,7 +75,7 @@ class RequestQueueTests(unittest.TestCase):
   bundle=bundles[0];decision={'action':'merged_forward','bundle_id':bundle['bundle_id'],'message_ids':['1','2'],'route_id':bundle['destination']['route_id'],'_outgoing_moments':bundles,'request_ids':['1:3'],'request_outcome':'completed'}
   delivery=social.apply_decision(self.db,{'target_group':'1'},decision,{},self.cfg,self.now)
   rq.bind(self.db,'1',['1:3'],decision,delivery,self.now)
-  with patch('agent.onebot_call',side_effect=[{'user_id':99},{'message_id':77}]) as api:self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+1),1)
+  with patch('app.agent.onebot_call',side_effect=[{'user_id':99},{'message_id':77}]) as api:self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+1),1)
   self.assertEqual([p['data']['id'] for p in api.call_args.args[2]['messages']],['1','2'])
 
  def test_mute_keeps_request_without_model_requeue(self):

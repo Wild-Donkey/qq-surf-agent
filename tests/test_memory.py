@@ -7,15 +7,15 @@ import tempfile
 import unittest
 import time
 from unittest.mock import patch
-import memory_store as ms
-import archive
-import application
-import memory_maintenance as mm
-import memory_store
-import workflow
-from sessions import SessionPool
-from sessions import GroupSession
-from archive import Archive
+from app import memory_store as ms
+from app import archive
+from app import application
+from app import memory_maintenance as mm
+from app import memory_store
+from app import workflow
+from app.sessions import SessionPool
+from app.sessions import GroupSession
+from app.archive import Archive
 
 
 class MemorySchemaTests(unittest.TestCase):
@@ -49,7 +49,7 @@ class MemorySchemaTests(unittest.TestCase):
   with self.assertRaisesRegex(ValueError,'memory_revision_conflict'):self.store.commit([stale],'worker')
   self.assertEqual(self.store.load('group','1')['state']['summary'],'new')
  def test_committed_state_survives_projection_failure(self):
-  with patch('memory_store.atomic_write',side_effect=OSError('disk interruption')):
+  with patch('app.memory_store.atomic_write',side_effect=OSError('disk interruption')):
    with self.assertRaises(OSError):self.store.state_updates('1',{'summary':'durable'},[])
   self.store.materialize();doc=json.loads((self.root/'groups/1/group.json').read_text())
   self.assertEqual(doc['state']['summary'],'durable');self.assertIn('durable',(self.root/'groups/1/group.md').read_text())
@@ -139,7 +139,7 @@ class MaintenanceTests(unittest.TestCase):
   finally:store.close()
  def test_model_uses_fast_mode_and_input_only_schema(self):
   self.record('a')
-  with patch('social.load_model',return_value={'provider':'compatible'}),patch('model_gate.reserve',return_value=1),patch('social.generate_text',return_value=('{}',{})) as infer:
+  with patch('app.social.load_model',return_value={'provider':'compatible'}),patch('app.model_gate.reserve',return_value=1),patch('app.social.generate_text',return_value=('{}',{})) as infer:
    mm.tick(self.db,self.cfg)
   model,_,payload=infer.call_args.args
   self.assertEqual(model['reasoning_effort'],'none')
@@ -147,7 +147,7 @@ class MaintenanceTests(unittest.TestCase):
  def test_provider_refusal_records_gap_without_repeating_same_batch(self):
   from protocol import ProtocolError
   self.record('a')
-  with patch('social.load_model',return_value={}),patch('model_gate.reserve',return_value=1),patch('social.generate_text',side_effect=ProtocolError('model_response','model_content_filtered')):
+  with patch('app.social.load_model',return_value={}),patch('app.model_gate.reserve',return_value=1),patch('app.social.generate_text',side_effect=ProtocolError('model_response','model_content_filtered')):
    with self.assertRaises(ProtocolError):mm.tick(self.db,self.cfg)
   self.assertEqual(mm.status(self.cfg)['blocked_ranges'],1)
   self.assertEqual(mm.status(self.cfg)['pending_groups'],0)

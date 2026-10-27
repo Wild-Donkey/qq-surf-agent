@@ -8,15 +8,15 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
-import protocol
-import application
-import chatgpt_auth
-import workflow
-import repairs
-import alerts
-import diagnostics
-import social
-from protocol import ProtocolError
+from app import protocol
+from app import application
+from app import chatgpt_auth
+from app import workflow
+from app import repairs
+from app import alerts
+from app import diagnostics
+from app import social
+from app.protocol import ProtocolError
 import urllib.error
 
 
@@ -27,7 +27,7 @@ class ProtocolTests(unittest.TestCase):
   self.assertEqual(error.exception.stage,'worker_api')
  def test_sse_error_is_separate_and_does_not_log_contents(self):
   content='private-chat-must-not-be-logged'
-  with patch('chatgpt_auth.access_token',return_value='test'),patch('chatgpt_auth.urllib.request.urlopen',return_value=io.BytesIO(('data: '+content+'\n\n').encode())):
+  with patch('app.chatgpt_auth.access_token',return_value='test'),patch('app.chatgpt_auth.urllib.request.urlopen',return_value=io.BytesIO(('data: '+content+'\n\n').encode())):
    with self.assertRaises(protocol.ProtocolError) as error:chatgpt_auth.infer('test','test',{})
   self.assertEqual(error.exception.stage,'sse_event');self.assertNotIn(content,json.dumps(error.exception.details))
  def test_executable_repair_verifies_and_resumes_without_group_send(self):
@@ -36,14 +36,14 @@ class ProtocolTests(unittest.TestCase):
    db=workflow.connect(':memory:');alerts.record(db,'model_worker_api_invalid_json','格式错误',now=1000)
    job={'id':1,'alert_id':db.execute('SELECT id FROM alerts').fetchone()[0]};cfg={'bot_id':'99'}
    result={'action':'retry_model'}
-   with patch('repairs.subprocess.run',return_value=type('Result',(),{'returncode':0})()),patch('social.load_model',return_value={}),patch('social.generate_text',return_value=('{"call":{"name":"wait","arguments":{}}}',{'prompt_tokens':5})),patch('agent.onebot_call') as send:
+   with patch('app.repairs.subprocess.run',return_value=type('Result',(),{'returncode':0})()),patch('app.social.load_model',return_value={}),patch('app.social.generate_text',return_value=('{"call":{"name":"wait","arguments":{}}}',{'prompt_tokens':5})),patch('app.agent.onebot_call') as send:
     out=repairs.perform(db,cfg,root,job,result);self.assertEqual(out['status'],'repaired');send.assert_not_called()
     again=repairs.perform(db,cfg,root,job,result);self.assertEqual(again,out)
    self.assertEqual(db.execute("SELECT value FROM metrics WHERE key='model_state'").fetchone()[0],'ready');db.close()
  def test_quota_errors_are_not_blindly_retried(self):
   with tempfile.TemporaryDirectory() as root:
    db=workflow.connect(':memory:');alerts.record(db,'model_credit_balance_exhausted','额度不足',now=1000)
-   with patch('social.generate_text') as infer:
+   with patch('app.social.generate_text') as infer:
     out=repairs.perform(db,{},root,{'id':1,'alert_id':1},{'action':'retry_model'});self.assertEqual(out['status'],'blocked');infer.assert_not_called()
    db.close()
 
@@ -52,7 +52,7 @@ class EmptyOutputTests(unittest.TestCase):
  def test_empty_output_reports_finish_reason_without_response_content(self):
   model={'enabled':True,'provider':'compatible','model':'test','base_url':'http://localhost'}
   response={'choices':[{'message':{'content':''},'finish_reason':'length'}],'usage':{'completion_tokens':4096}}
-  with patch('social.api_key',return_value='fake'),patch('vision.prepare',return_value=({'vision_status':{'attached':[],'unavailable':[]}},[])),patch('agent.request',return_value=json.dumps(response)):
+  with patch('app.social.api_key',return_value='fake'),patch('app.vision.prepare',return_value=({'vision_status':{'attached':[],'unavailable':[]}},[])),patch('app.agent.request',return_value=json.dumps(response)):
    with self.assertRaises(ProtocolError) as caught:social.generate_text(model,'JSON',{})
   self.assertEqual(caught.exception.code,'model_empty_output');self.assertEqual(caught.exception.details['finish_reason'],'length')
 
@@ -60,7 +60,7 @@ class EmptyOutputTests(unittest.TestCase):
   model={'enabled':True,'provider':'compatible','model':'test','base_url':'http://localhost'}
   for content in ('','{"partial":true}'):
    response={'choices':[{'message':{'content':content},'finish_reason':'content_filter'}]}
-   with patch('social.api_key',return_value='fake'),patch('vision.prepare',return_value=({'vision_status':{'attached':[],'unavailable':[]}},[])),patch('agent.request',return_value=json.dumps(response)):
+   with patch('app.social.api_key',return_value='fake'),patch('app.vision.prepare',return_value=({'vision_status':{'attached':[],'unavailable':[]}},[])),patch('app.agent.request',return_value=json.dumps(response)):
     with self.assertRaises(ProtocolError) as caught:social.generate_text(model,'JSON',{})
    self.assertEqual(caught.exception.code,'model_content_filtered')
 

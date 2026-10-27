@@ -1,7 +1,7 @@
 import concurrent.futures,json,tempfile,time,unittest
 from unittest.mock import patch
 from pathlib import Path
-import speech,private_chat,workflow
+from app import speech, private_chat, workflow
 
 class SpeechTests(unittest.TestCase):
  def setUp(self):
@@ -28,5 +28,5 @@ class SpeechTests(unittest.TestCase):
   self.assertTrue(speech.prepare(self.db,[row],{},self.cfg))
   self.assertIn('不要猜测内容',self.db.execute('SELECT text FROM private_messages').fetchone()[0])
  def test_does_not_open_paths_from_message(self):
-  with patch('speech.agent.onebot_call',return_value={'file':'/etc/passwd','base64':''}):
+  with patch('app.speech.agent.onebot_call',return_value={'file':'/etc/passwd','base64':''}):
    with self.assertRaises(ValueError):speech.recognize({}, {'file':'voice-id'},self.tmp.name)

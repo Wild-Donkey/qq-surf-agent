@@ -4,18 +4,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import unittest
 from unittest.mock import patch
-import chat_view
+from app import chat_view
 import curses
 import io
 import tempfile
 from unittest.mock import Mock
-import lite_console
-from lite_view import History
-from log_scroll import Viewport
+from app import lite_console
+from app.lite_view import History
+from app.log_scroll import Viewport
 import collections
-from terminal_mouse import Reader
-from terminal_mouse import Mouse
-from terminal_mouse import decode
+from app.terminal_mouse import Reader
+from app.terminal_mouse import Mouse
+from app.terminal_mouse import decode
 
 
 class ChatViewTests(unittest.TestCase):
@@ -53,7 +53,7 @@ class LiteTests(unittest.TestCase):
    (root/'runtime/logs/qq-helper.log').write_text('10-21 14:02:05 [info] bot | 接收 <- 群聊 [群(12345)] [人(67890)] hello\n')
    (root/'runtime/logs/surf-bot.log').write_text('10-21 14:02:06 worker processing group=12345\n')
    out=io.StringIO();controller=Mock();controller.execute.return_value='已选择群'
-   with patch('lite_console.ROOT',root),patch('avatar_palette.AvatarPalette',side_effect=AssertionError('must not load avatar colors')):
+   with patch('app.lite_console.ROOT',root),patch('app.avatar_palette.AvatarPalette',side_effect=AssertionError('must not load avatar colors')):
     lite_console.run(controller,Mock(side_effect=['/use 群','/help','/quit']),out)
    self.assertNotIn('\x1b',out.getvalue());self.assertIn('[应用] worker processing',out.getvalue());self.assertIn('hello',out.getvalue())
    controller.execute.assert_called_once_with('/use 群')
@@ -134,7 +134,7 @@ class UnifiedFeedTests(unittest.TestCase):
   from terminal_feed import Feed
   with tempfile.TemporaryDirectory() as tmp:
    root=Path(tmp);logs=root/'runtime/logs';logs.mkdir(parents=True)
-   (root/'workflow.json').write_text(json.dumps({'groups':[{'id':12345,'name':'测试群'}]}))
+   (root/'app.workflow.json').write_text(json.dumps({'groups':[{'id':12345,'name':'测试群'}]}))
    (logs/'qq-helper.log').write_text('10-21 14:02:05 [info] bot | 接收 <- 群聊 [测试群(12345)] [小明(67890)] hello\n10-21 14:02:07 [warn] bot | QQ warning\n')
    notes={'summary':'话题在讨论猫','images':[{'reference':'image1','description':'猫在纸箱上'}],'uncertainties':['不知道是谁家的猫']}
    (logs/'surf-bot.log').write_text('10-21 14:02:06 worker understanding group=12345 request_id=abc observations='+json.dumps(notes,ensure_ascii=False)+'\n')
@@ -147,7 +147,7 @@ class UnifiedFeedTests(unittest.TestCase):
  def test_full_console_single_pane(self):
   import console
   screen=Mock();screen.getmaxyx.return_value=(30,120)
-  with tempfile.TemporaryDirectory() as tmp,patch('console.ROOT',Path(tmp)),patch('console.Controller'),patch('console.avatar_palette.AvatarPalette'),patch('console.chat_view.Styles'),patch('console.curses.curs_set'),patch('console.curses.mousemask'),patch('console.sys.stdout',io.StringIO()),patch('console.terminal_mouse.Reader') as reader:
+  with tempfile.TemporaryDirectory() as tmp,patch('app.console.ROOT',Path(tmp)),patch('app.console.Controller'),patch('app.console.avatar_palette.AvatarPalette'),patch('app.console.chat_view.Styles'),patch('app.console.curses.curs_set'),patch('app.console.curses.mousemask'),patch('app.console.sys.stdout',io.StringIO()),patch('app.console.terminal_mouse.Reader') as reader:
    reader.return_value.get.side_effect=[curses.KEY_F2,None,curses.KEY_F2]+list('/quit\n')
    console.run(screen)
   shown=[str(call.args[2]) for call in screen.addstr.call_args_list]

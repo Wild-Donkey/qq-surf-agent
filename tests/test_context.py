@@ -5,15 +5,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import tempfile
 import time
 import unittest
-import workflow
-import social
-from memory import MarkdownMemory
-import archive
-import conversation_refs
+from app import workflow
+from app import social
+from app.memory import MarkdownMemory
+from app import archive
+from app import conversation_refs
 import json
 from unittest.mock import patch
-import understanding
-import application
+from app import understanding
+from app import application
 
 
 class ConversationContextTests(unittest.TestCase):
@@ -94,14 +94,14 @@ class UnderstandingTests(unittest.TestCase):
   value={'summary':'大家在看猫图','images':[{'reference':'image1','description':'一只猫趴在纸箱上'}],'uncertainties':['品种不确定']}
   call=application.decode(json.dumps({'call':{'name':'finish_turn','arguments':{'action':'wait','understanding':value}}},ensure_ascii=False));decision=application.decision(call)
   self.assertEqual(decision['text'],'')
-  with patch('service_log.event') as log:receipt=understanding.save(self.cfg,'1',self.payload,decision['understanding'],self.db)
+  with patch('app.service_log.event') as log:receipt=understanding.save(self.cfg,'1',self.payload,decision['understanding'],self.db)
   self.assertTrue(receipt['saved']);self.assertIn('一只猫',log.call_args.args[1]);self.assertEqual(understanding.recent(self.cfg,'2'),[])
   path=Path(self.tmp.name)/'groups/1/requests'/(receipt['request_id']+'.md');self.assertIn('一只猫',path.read_text())
   # A later summary-only update retains already understood images.
   understanding.save(self.cfg,'1',self.payload,{'summary':'话题已收尾'},self.db)
   self.assertEqual(len(understanding.recent(self.cfg,'1')[0]['understanding']['images']),1)
  def test_unknown_image_is_not_logged_or_saved_as_observed(self):
-  with patch('service_log.event') as log:receipt=understanding.save(self.cfg,'1',self.payload,{'images':[{'reference':'invented','description':'未经看过的图'}]},self.db)
+  with patch('app.service_log.event') as log:receipt=understanding.save(self.cfg,'1',self.payload,{'images':[{'reference':'invented','description':'未经看过的图'}]},self.db)
   self.assertEqual(receipt['rejected_images'],1);self.assertEqual(receipt['understanding']['images'],[]);self.assertNotIn('未经看过',log.call_args.args[1])
  def test_independent_from_invalid_person_state(self):
   understanding.save(self.cfg,'1',self.payload,{'summary':'局面观察'},self.db)
@@ -126,7 +126,7 @@ class GroupIsolationTests(unittest.TestCase):
  def test_legacy_mirror_cannot_enter_local_batch_or_generate_reply(self):
   self.add(1,1,'本群问题')
   with self.db:self.db.execute("INSERT INTO social_jobs(event_key,target_group,source_group,user_id,created,status,trigger_text) VALUES ('2:2','1','2','9',?,'pending','隔壁问题')",(self.now-11,))
-  with patch('social.load_model',return_value={'enabled':True,'api_key':'test'}),patch('social.call_model',return_value=({'action':'reply','text':'本群回答'},{})) as call:social.tick(self.db,self.cfg)
+  with patch('app.social.load_model',return_value={'enabled':True,'api_key':'test'}),patch('app.social.call_model',return_value=({'action':'reply','text':'本群回答'},{})) as call:social.tick(self.db,self.cfg)
   self.assertEqual([v['text'] for v in call.call_args.args[1]['unread_messages']],['本群问题'])
   self.assertEqual(self.db.execute("SELECT status FROM social_jobs WHERE event_key='2:2'").fetchone()[0],'cross_group_trigger_retired')
  def test_apply_and_dispatch_both_block_cross_group_plain_reply(self):
@@ -136,7 +136,7 @@ class GroupIsolationTests(unittest.TestCase):
   with self.db:
    self.db.execute("INSERT INTO candidates(fingerprint,source_group,text,images,created,status,kind) VALUES ('bad','2','跨群回复','[]',?,'approved','reply')",(self.now,))
    self.db.execute("INSERT INTO deliveries(candidate_id,target_group,fingerprint,status,created,updated) VALUES (1,'1','bad','approved',?,?)",(self.now,self.now))
-  with patch('agent.onebot_call',return_value={'user_id':99}) as api:self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+1),0);self.assertEqual(api.call_count,1)
+  with patch('app.agent.onebot_call',return_value={'user_id':99}) as api:self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+1),0);self.assertEqual(api.call_count,1)
   self.assertEqual(self.db.execute('SELECT status FROM deliveries').fetchone()[0],'blocked_cross_group_reply')
  def test_foreign_material_is_not_in_reply_payload(self):
   self.add(1,1,'甲群问题');self.add(2,2,'乙群独有的句子')

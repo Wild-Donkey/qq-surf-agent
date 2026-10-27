@@ -4,18 +4,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import time
 import unittest
-import workflow
-import participants
+from app import workflow
+from app import participants
 from unittest.mock import patch
-import social
+from app import social
 import json
 import sqlite3
 import tempfile
-import identities
-import application
-import profiling
-import archive
-import model_gate
+from app import identities
+from app import application
+from app import profiling
+from app import archive
+from app import model_gate
 
 
 class ParticipantTests(unittest.TestCase):
@@ -81,7 +81,7 @@ class HumanGuardTests(unittest.TestCase):
             participants.observe(db,{'group_id':1,'user_id':8,'message_id':1,'time':now},cfg,'自动播报',now)
         social.apply_decision(db,{'target_group':'1','source_group':'1','event_key':'1:1'},
                               {'action':'reply','text':'不该发出'}, {},cfg,now)
-        with patch('agent.onebot_call',return_value={'user_id':99}) as api:
+        with patch('app.agent.onebot_call',return_value={'user_id':99}) as api:
             self.assertEqual(workflow.dispatch(db,cfg,{},now+1),0)
             self.assertEqual(api.call_count,1)
         self.assertEqual(db.execute('SELECT status FROM deliveries').fetchone()[0],'approved');db.close()
@@ -101,7 +101,7 @@ class IdentityTests(unittest.TestCase):
    self.assertEqual(r.alias('1'),'老崔');self.assertEqual(r.resolve('老崔'),'1');r.close()
  def test_initial_uses_account_name_not_card(self):
   with tempfile.TemporaryDirectory() as root:
-   db=sqlite3.connect(Path(root)/'archive.sqlite3');db.execute('CREATE TABLE messages(id INTEGER,user_id TEXT,nickname TEXT,raw_json TEXT)')
+   db=sqlite3.connect(Path(root)/'app.archive.sqlite3');db.execute('CREATE TABLE messages(id INTEGER,user_id TEXT,nickname TEXT,raw_json TEXT)')
    db.execute('INSERT INTO messages VALUES (1,?,?,?)',('1','群名片',json.dumps({'sender':{'nickname':'MyCall'}})));db.commit();db.close()
    r=identities.Registry(root);self.assertEqual(r.alias('1','群名片'),'MyCall');r.close()
  def test_transport_compact_quotes_history_and_on_demand_details(self):
@@ -133,7 +133,7 @@ class IdentityTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as root:
    db=workflow.connect(':memory:');participants.ensure_schema(db)
    r=identities.Registry(root);r.alias('1','老崔');r.close()
-   with patch('agent.onebot_call',return_value={'user_id':1,'nickname':'account','card':'group card'}):
+   with patch('app.agent.onebot_call',return_value={'user_id':1,'nickname':'account','card':'group card'}):
     result=application.read(db,{'context_dir':root},'9',{'member_profiles':[{'id':'1'}]}, {'name':'get_member','arguments':{'alias':'老崔'}})
    self.assertEqual(result['user_id'],'1');self.assertEqual(result['account']['card'],'group card')
    schema={'call':{'name':'get_memory_schema'},'result':{'properties':{'user_id':{'type':'string'}}}}
@@ -148,7 +148,7 @@ class ProfilingTests(unittest.TestCase):
  def event(self,mid,stamp,user=7):return {'group_id':1,'message_id':mid,'message_seq':mid,'user_id':user,'time':stamp,'sender':{'nickname':'群友'+str(user)},'message':[{'type':'text','data':{'text':'完整原话'+str(mid)+'甲'*300}}]}
  def test_pagination_preserves_full_history_and_detects_repeat(self):
   profiling.enqueue(self.db,self.cfg,'1');state={'phase':'fetch'};now=time.time();events=[self.event(900,now-100),self.event(1,now)]
-  with patch('agent.onebot_call',return_value={'messages':events}) as api:
+  with patch('app.agent.onebot_call',return_value={'messages':events}) as api:
    profiling.fetch_page(self.db,self.cfg,{},'1',state);self.assertEqual(state['cursor'],'900')
    profiling.fetch_page(self.db,self.cfg,{},'1',state)
    self.assertEqual(api.call_args[0][2]['message_seq'],'900')

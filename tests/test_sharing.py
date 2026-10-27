@@ -7,16 +7,16 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
-import agent
-import application
-import workflow
-import social
-import merged_forward as mf
-import participants
+from app import agent
+from app import application
+from app import workflow
+from app import social
+from app import merged_forward as mf
+from app import participants
 import base64
 import hashlib
-import emoticons
-import image_sharing
+from app import emoticons
+from app import image_sharing
 import urllib.error
 
 
@@ -48,14 +48,14 @@ class MergedForwardTests(unittest.TestCase):
   self.assertEqual(self.db.execute('SELECT count(*) FROM deliveries').fetchone()[0],0)
  def test_cross_group_send_preserves_nodes_and_immediate_delivery(self):
   self.approve()
-  with patch('agent.onebot_call',side_effect=[{'user_id':99},{'message_id':888}]) as api:
+  with patch('app.agent.onebot_call',side_effect=[{'user_id':99},{'message_id':888}]) as api:
    self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+1),1)
    self.assertEqual(api.call_args.args[1],'send_group_forward_msg')
    self.assertEqual(api.call_args.args[2],{'group_id':2,'messages':[{'type':'node','data':{'id':x}} for x in ['1','2','3']]})
   self.assertEqual(self.db.execute('SELECT status FROM deliveries').fetchone()[0],'sent')
  def test_overlapping_bundles_are_not_resent_after_ambiguous_send(self):
   d=self.decision();self.approve(d)
-  with patch('agent.onebot_call',side_effect=[{'user_id':99},TimeoutError()]):workflow.dispatch(self.db,self.cfg,{},self.now+1)
+  with patch('app.agent.onebot_call',side_effect=[{'user_id':99},TimeoutError()]):workflow.dispatch(self.db,self.cfg,{},self.now+1)
   self.assertEqual(self.db.execute('SELECT status FROM deliveries').fetchone()[0],'uncertain')
   self.approve(d);self.assertEqual(self.db.execute('SELECT count(*) FROM deliveries').fetchone()[0],1)
   self.assertEqual(mf.available(self.db,self.cfg,'2',self.now),[])
@@ -66,7 +66,7 @@ class MergedForwardTests(unittest.TestCase):
   self.assertEqual(mf.available(self.db,self.cfg,'2',self.now),[])
  def test_disabled_target_and_human_gate(self):
   self.approve();self.cfg['human_presence']={'enabled':True}
-  with patch('agent.onebot_call',return_value={'user_id':99}) as api:self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+1),0);self.assertEqual(api.call_count,1)
+  with patch('app.agent.onebot_call',return_value={'user_id':99}) as api:self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+1),0);self.assertEqual(api.call_count,1)
  def test_final_payload_revalidates_privacy_and_source(self):
   self.approve();row=self.db.execute('SELECT text FROM candidates').fetchone()
   self.assertEqual(len(mf.send_payload(self.db,self.cfg,'2','1',row[0])['messages']),3)
@@ -74,7 +74,7 @@ class MergedForwardTests(unittest.TestCase):
   with self.assertRaises(ValueError):mf.send_payload(self.db,self.cfg,'2','1',row[0])
  def test_bridge_requires_message_receipt(self):
   cfg={'sender':{'url':'http://127.0.0.1:3000','token':'x'}}
-  with patch('agent.request',return_value=json.dumps({'status':'ok','retcode':0,'data':{}})):
+  with patch('app.agent.request',return_value=json.dumps({'status':'ok','retcode':0,'data':{}})):
    with self.assertRaises(ValueError):agent.onebot_call(cfg,'send_group_forward_msg',{})
  def test_message_trigger_worker_receives_bundle_and_queues_card(self):
   with self.db:
@@ -86,7 +86,7 @@ class MergedForwardTests(unittest.TestCase):
   def model_call(model,payload):
    bundle=payload['outgoing_moments'][0]
    return social.validate_decision(json.dumps({'call':{'name':'finish_turn','arguments':{'action':'merged_forward','bundle_id':bundle['bundle_id'],'route_id':bundle['destination']['route_id'],'message_ids':[m['message_id'] for m in bundle['messages']],'quality':'natural'}}})),{}
-  with patch('social.load_model',return_value={'enabled':True,'api_key':'test'}),patch('social.call_model',side_effect=model_call):social.tick(self.db,self.cfg)
+  with patch('app.social.load_model',return_value={'enabled':True,'api_key':'test'}),patch('app.social.call_model',side_effect=model_call):social.tick(self.db,self.cfg)
   row=self.db.execute("SELECT d.target_group,d.status,c.kind FROM deliveries d JOIN candidates c ON c.id=d.candidate_id").fetchone()
   self.assertIsNotNone(row);self.assertEqual(tuple(row),('2','approved','moment_forward'))
  def test_aged_source_and_optout_after_draft_are_rejected(self):
@@ -108,7 +108,7 @@ class MergedForwardTests(unittest.TestCase):
   self.assertEqual(tuple(row),('2','moment_forward'))
   self.cfg['max_shares_per_group_day']=None
   with self.db:self.db.execute('INSERT INTO events VALUES (?,?,?,?,?,?)',('2','newer','newer','隔壁继续聊天','[]',self.now+1))
-  with patch('agent.onebot_call',side_effect=[{'user_id':99},{'message_id':888}]):self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+2),1)
+  with patch('app.agent.onebot_call',side_effect=[{'user_id':99},{'message_id':888}]):self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+2),1)
  def test_outgoing_route_cannot_be_forged_or_sent_to_idle_group(self):
   decision=self.outgoing_decision()
   with self.assertRaises(ValueError):social.apply_decision(self.db,{'target_group':'1'},dict(decision,route_id='invented'),{},self.cfg,self.now)
@@ -123,7 +123,7 @@ class MergedForwardTests(unittest.TestCase):
   with self.db:self.db.execute("UPDATE deliveries SET status='sent',updated=?",(self.now-1,))
   social.apply_decision(self.db,{'target_group':'1'},decision,{},self.cfg,self.now)
   self.cfg['group_cooldown_seconds']=3600
-  with patch('agent.onebot_call',side_effect=[{'user_id':99},{'message_id':889}]):self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+1),1)
+  with patch('app.agent.onebot_call',side_effect=[{'user_id':99},{'message_id':889}]):self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+1),1)
  def test_outgoing_interface_retains_route_selector(self):
   d=self.outgoing_decision()
   args={k:d[k] for k in ('action','bundle_id','message_ids','route_id')};args['quality']='natural'
@@ -152,7 +152,7 @@ class ImageSharingTests(unittest.TestCase):
   return {'action':'share_image','image_id':self.image,'route_id':routes[0]['route_id'],'_image_destinations':routes}
  def test_direct_image_preserves_bytes_and_sends_no_commentary(self):
   d=self.selection();social.apply_decision(self.db,{'target_group':'1','source_group':'1'},d,{},self.cfg,self.now)
-  with patch('agent.onebot_call',side_effect=[{'user_id':99},{'message_id':90}]) as api:self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+1),1)
+  with patch('app.agent.onebot_call',side_effect=[{'user_id':99},{'message_id':90}]) as api:self.assertEqual(workflow.dispatch(self.db,self.cfg,{},self.now+1),1)
   payload=api.call_args.args[2];self.assertEqual(payload['group_id'],2)
   self.assertEqual([p['type'] for p in payload['message']],['image'])
   self.assertEqual(base64.b64decode(payload['message'][0]['data']['file'].removeprefix('base64://')),self.raw)
@@ -170,13 +170,13 @@ class ImageSharingTests(unittest.TestCase):
  def test_comment_and_share_are_separate_explicit_decisions(self):
   def model_call(model,payload):
    return {'action':'reply','text':'自然的本群评论','image_share':{'image_id':self.image,'route_id':payload['image_destinations'][0]['route_id'],'quality':'natural','reason':'这张新闻图的反差符合目标群趣味'}},{}
-  with patch('social.load_model',return_value={'enabled':True,'api_key':'test'}),patch('social.call_model',side_effect=model_call):social.tick(self.db,self.cfg)
+  with patch('app.social.load_model',return_value={'enabled':True,'api_key':'test'}),patch('app.social.call_model',side_effect=model_call):social.tick(self.db,self.cfg)
   self.assertEqual(self.db.execute("SELECT count(*) FROM candidates WHERE kind='reply'").fetchone()[0],1)
   self.assertEqual(self.db.execute("SELECT count(*) FROM candidates WHERE kind='image_share'").fetchone()[0],1)
-  with patch('agent.onebot_call',side_effect=[{'user_id':99},{'message_id':91}]) as api:workflow.dispatch(self.db,self.cfg,{},self.now+1)
+  with patch('app.agent.onebot_call',side_effect=[{'user_id':99},{'message_id':91}]) as api:workflow.dispatch(self.db,self.cfg,{},self.now+1)
   self.assertEqual(api.call_args.args[2]['group_id'],1);self.assertEqual(api.call_args.args[2]['message'][0]['type'],'text')
  def test_uninteresting_image_does_not_auto_share(self):
-  with patch('social.load_model',return_value={'enabled':True,'api_key':'test'}),patch('social.call_model',return_value=({'action':'wait','text':''},{})):social.tick(self.db,self.cfg)
+  with patch('app.social.load_model',return_value={'enabled':True,'api_key':'test'}),patch('app.social.call_model',return_value=({'action':'wait','text':''},{})):social.tick(self.db,self.cfg)
   self.assertEqual(self.db.execute("SELECT count(*) FROM candidates WHERE kind='image_share'").fetchone()[0],0)
  def test_interface_and_natural_quality_guard(self):
   for name in ('share_image','finish_turn'):
@@ -202,7 +202,7 @@ class ForwardDispatchTests(unittest.TestCase):
                 social.apply_decision(db, job, {'action': 'forward', 'message_id': 'other'}, {}, cfg, now)
             for mid in ('1', '2'):
                 social.apply_decision(db, dict(job, event_key='1:' + mid), {'action': 'forward', 'message_id': mid, '_forward_message_ids': [mid], '_context_watermark': now, '_deadline_reply': True}, {}, cfg, now)
-            with patch('agent.onebot_call', side_effect=[{'user_id': 99}, {'message_id': 123}]) as api:
+            with patch('app.agent.onebot_call', side_effect=[{'user_id': 99}, {'message_id': 123}]) as api:
                 self.assertEqual(workflow.dispatch(db, cfg, {}, now + 1), 1)
                 self.assertEqual(api.call_count, 2)
                 self.assertEqual(api.call_args.args[1], 'send_group_forward_msg')

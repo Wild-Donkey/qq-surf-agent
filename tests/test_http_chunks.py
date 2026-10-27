@@ -2,7 +2,7 @@ import hashlib,hmac,http.client,json,sys,tempfile,threading,time,unittest
 from pathlib import Path
 from http.server import ThreadingHTTPServer
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-import workflow
+from app import workflow
 
 class ChunkTests(unittest.TestCase):
     def test_signed_napcat_chunked_event_and_invalid_signature(self):
