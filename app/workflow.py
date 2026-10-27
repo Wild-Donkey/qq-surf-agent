@@ -624,7 +624,12 @@ def handler(db_path, cfg, secret, api_loader=None):
                 with closing(connect(db_path)) as db:
                     result=ingest(db,event,current_config(),api_cfg=current_api())
                     if event.get('post_type') in ('message','notice','request'):
-                        service_log.event('surf-bot','event '+str(event.get('post_type'))+' group='+str(event.get('group_id',''))+' user='+str(event.get('user_id',''))+' result='+str(result))
+                        # 事件回执行：合并消息文本预览，使单行日志自包含，无需交叉对照 qq-helper.log。
+                        text_preview=''
+                        if event.get('post_type')=='message':
+                            parts=event.get('message') if isinstance(event.get('message'),list) else []
+                            text_preview=' '.join(str(p.get('data',{}).get('text','')) for p in parts if isinstance(p,dict) and p.get('type')=='text')[:120].replace('\n',' ')
+                        service_log.event('surf-bot','event '+str(event.get('post_type'))+' group='+str(event.get('group_id',''))+' user='+str(event.get('user_id',''))+' result='+str(result)+((' text='+text_preview) if text_preview else ''))
                     db.execute('INSERT OR REPLACE INTO metrics VALUES (?,?)',('last_event',str(time.time())))
                     db.commit()
                 self.send_response(200); self.end_headers(); self.wfile.write(b'{}')
